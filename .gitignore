@@ -1,0 +1,98 @@
+# ================================
+# WhatsApp Automation - Git Ignore
+# ================================
+
+# Dependencies
+node_modules/
+vendor/
+
+# Environment files (contain secrets!)
+.env
+.env.local
+.env.*.local
+*.env
+
+# Build outputs
+dist/
+build/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Data and sessions (sensitive!)
+data/
+sessions/
+*.db
+*.sqlite
+*.sqlite3
+qrcodes/
+media/
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# Go
+*.exe
+*.exe~
+*.test
+*.out
+go.work
+
+# Python (if any scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+ENV/
+
+# Docker
+.docker/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+
+# Coverage and testing
+coverage/
+.nyc_output/
+*.lcov
+
+# Specific project ignores
+/master-server/node_modules/
+/dashboard/node_modules/
+/worker/sessions/
+/worker/qrcodes/
+/worker/logs/
+/worker/data/
+
+# Keep template files
+!*.template
+!env.template

@@ -1,0 +1,302 @@
+version: '3.8'
+
+# ============================================
+# WhatsApp Multi-Docker Automation System
+# ============================================
+# 
+# Services:
+#   - postgres: Database for accounts, messages, campaigns
+#   - redis: Message queue and caching
+#   - master: Node.js API server (port 5000)
+#   - worker-1: US accounts (+1) on port 3001
+#   - worker-2: Israel accounts (+972) on port 3002
+#   - worker-3: UK accounts (+44) on port 3003
+#   - dashboard: React Web UI (port 8080)
+#
+# Setup:
+#   1. Copy env.template to .env: cp env.template .env
+#   2. Update .env with your settings
+#   3. Run: docker-compose up -d
+#
+# Usage:
+#   docker-compose up -d          # Start all services
+#   docker-compose logs -f master # View master logs
+#   docker-compose down           # Stop all services
+#
+# ============================================
+
+services:
+  # ============================================
+  # DATABASE - PostgreSQL 15
+  # ============================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: wa_postgres
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${DB_NAME:-whatsapp_automation}
+      POSTGRES_USER: ${DB_USER:-whatsapp}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-whatsapp123}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-whatsapp} -d ${DB_NAME:-whatsapp_automation}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - wa_network
+
+  # ============================================
+  # CACHE & QUEUE - Redis 7
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: wa_redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+    networks:
+      - wa_network
+
+  # ============================================
+  # MASTER SERVER - Node.js Express API
+  # ============================================
+  master:
+    build:
+      context: ../master-server
+      dockerfile: Dockerfile
+    container_name: wa_master
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: ${MASTER_PORT:-5000}
+      # Database
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-whatsapp_automation}
+      DB_USER: ${DB_USER:-whatsapp}
+      DB_PASSWORD: ${DB_PASSWORD:-whatsapp123}
+      DATABASE_URL: postgres://${DB_USER:-whatsapp}:${DB_PASSWORD:-whatsapp123}@postgres:5432/${DB_NAME:-whatsapp_automation}
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      # Security
+      JWT_SECRET: ${JWT_SECRET:-your-secret-key-change-in-production}
+      API_KEY: ${API_KEY:-your-api-key-change-in-production}
+      # Worker URLs
+      WORKER_1_URL: ${WORKER_1_URL:-http://worker-1:3001}
+      WORKER_2_URL: ${WORKER_2_URL:-http://worker-2:3001}
+      WORKER_3_URL: ${WORKER_3_URL:-http://worker-3:3001}
+      WORKER_US_URL: ${WORKER_US_URL:-http://worker-1:3001}
+      WORKER_IL_URL: ${WORKER_IL_URL:-http://worker-2:3001}
+      WORKER_GB_URL: ${WORKER_GB_URL:-http://worker-3:3001}
+      # Anti-Ban Settings
+      MIN_DELAY_MS: ${MIN_DELAY_MS:-1000}
+      MAX_DELAY_MS: ${MAX_DELAY_MS:-7000}
+      SHORT_BREAK_INTERVAL: ${SHORT_BREAK_INTERVAL:-10}
+      LONG_BREAK_INTERVAL: ${LONG_BREAK_INTERVAL:-50}
+      MAX_MESSAGES_PER_DAY: ${MAX_MESSAGES_PER_DAY:-100}
+      MAX_MESSAGES_PER_HOUR: ${MAX_MESSAGES_PER_HOUR:-20}
+    ports:
+      - "${MASTER_PORT:-5000}:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    networks:
+      - wa_network
+
+  # ============================================
+  # WORKER 1 - USA Accounts (+1 phone numbers)
+  # ============================================
+  worker-1:
+    build:
+      context: ../worker
+      dockerfile: Dockerfile
+    container_name: wa_worker_1
+    env_file:
+      - .env
+    environment:
+      WORKER_ID: ${WORKER_1_ID:-worker-1}
+      WORKER_PORT: 3001
+      DEVICE_SEED: ${WORKER_1_SEED:-unique-seed-worker-1-usa-abc123}
+      PROXY_COUNTRY: ${WORKER_1_COUNTRY:-US}
+      MASTER_URL: http://master:5000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - worker1_sessions:/data/sessions
+      - worker1_qrcodes:/data/qrcodes
+      - worker1_logs:/data/logs
+    ports:
+      - "3001:3001"
+    depends_on:
+      master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - wa_network
+
+  # ============================================
+  # WORKER 2 - Israel Accounts (+972 phone numbers)
+  # ============================================
+  worker-2:
+    build:
+      context: ../worker
+      dockerfile: Dockerfile
+    container_name: wa_worker_2
+    env_file:
+      - .env
+    environment:
+      WORKER_ID: ${WORKER_2_ID:-worker-2}
+      WORKER_PORT: 3001
+      DEVICE_SEED: ${WORKER_2_SEED:-unique-seed-worker-2-israel-xyz789}
+      PROXY_COUNTRY: ${WORKER_2_COUNTRY:-IL}
+      MASTER_URL: http://master:5000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - worker2_sessions:/data/sessions
+      - worker2_qrcodes:/data/qrcodes
+      - worker2_logs:/data/logs
+    ports:
+      - "3002:3001"
+    depends_on:
+      master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - wa_network
+
+  # ============================================
+  # WORKER 3 - UK Accounts (+44 phone numbers)
+  # ============================================
+  worker-3:
+    build:
+      context: ../worker
+      dockerfile: Dockerfile
+    container_name: wa_worker_3
+    env_file:
+      - .env
+    environment:
+      WORKER_ID: ${WORKER_3_ID:-worker-3}
+      WORKER_PORT: 3001
+      DEVICE_SEED: ${WORKER_3_SEED:-unique-seed-worker-3-uk-qwe456}
+      PROXY_COUNTRY: ${WORKER_3_COUNTRY:-GB}
+      MASTER_URL: http://master:5000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - worker3_sessions:/data/sessions
+      - worker3_qrcodes:/data/qrcodes
+      - worker3_logs:/data/logs
+    ports:
+      - "3003:3001"
+    depends_on:
+      master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - wa_network
+
+  # ============================================
+  # DASHBOARD - React Web UI
+  # ============================================
+  dashboard:
+    build:
+      context: ../dashboard
+      dockerfile: Dockerfile
+    container_name: wa_dashboard
+    ports:
+      - "${DASHBOARD_PORT:-8080}:8080"
+    depends_on:
+      master:
+        condition: service_healthy
+      worker-1:
+        condition: service_healthy
+      worker-2:
+        condition: service_healthy
+      worker-3:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - wa_network
+
+# ============================================
+# VOLUMES
+# ============================================
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  worker1_sessions:
+    driver: local
+  worker1_qrcodes:
+    driver: local
+  worker1_logs:
+    driver: local
+  worker2_sessions:
+    driver: local
+  worker2_qrcodes:
+    driver: local
+  worker2_logs:
+    driver: local
+  worker3_sessions:
+    driver: local
+  worker3_qrcodes:
+    driver: local
+  worker3_logs:
+    driver: local
+
+# ============================================
+# NETWORKS
+# ============================================
+networks:
+  wa_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

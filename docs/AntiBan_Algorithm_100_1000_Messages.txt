@@ -1,0 +1,632 @@
+================================================================================
+              ULTRABOT v4.0.0 - INTERNAL ANTI-BAN ALGORITHM
+         אלגוריתם האנטי-באן הפנימי לטיפול ב-100 הודעות (דוגמה ל-1000)
+================================================================================
+
+ENGLISH VERSION FIRST, THEN HEBREW
+
+================================================================================
+INTERNAL ANTI-BAN ALGORITHM FOR 100 MESSAGES (EXAMPLE FOR 1000) - FULL GUIDE
+================================================================================
+
+This comprehensive guide explains the complete internal anti-ban system, including proxy integration, account sending mechanics after distribution, and all anti-ban components. The algorithm processes 100 messages (scaled to 1000) ensuring human-like behavior across multiple accounts/devices to avoid WhatsApp detection.
+
+#### 1. Message Processing Flow & Initial Distribution
+When receiving 100 messages for sending:
+
+Input: 100 messages (each with recipient, content, etc.)
+Processing Steps:
+  1. Validate all messages (check format, recipients)
+  2. Calculate account distribution
+  3. Assign messages to accounts with rotation
+  4. Initialize anti-ban parameters per account
+
+Output: Distributed sending pattern across accounts/devices
+
+For 1000 messages example:
+Input: 1000 messages
+Processing: Same validation + scaled distribution
+Output: Scaled distribution with more accounts and longer breaks
+
+#### 2. Account Distribution Calculation & Assignment
+Total Messages: 100
+Accounts Available: N (minimum 2, recommended 5-10)
+
+Messages Per Account = 100 / N
+  - Example: With 5 accounts = 20 messages each
+  - Example: With 10 accounts = 10 messages each
+
+Assignment Algorithm:
+  Account 1: Messages 1-10 (or calculated portion)
+  Account 2: Messages 11-20
+  ...
+  Rotation Rule: Switch accounts every 10 messages maximum to avoid pattern detection
+
+For 1000 messages:
+Total Messages: 1000
+Accounts Available: N (recommended 20-50)
+Messages Per Account = 1000 / N
+  - Example: With 25 accounts = 40 messages each
+Rotation Rule: Switch accounts every 10-20 messages
+
+#### 3. How Each Account Sends After Distribution
+After distribution, each account follows this sending protocol:
+
+Per Account Sending Flow:
+  1. Load Account Profile
+     - Connect to WhatsApp Web with account's QR/token
+     - Initialize WebView2 with account-specific fingerprint
+     - Set proxy/VPN for this account's IP
+
+  2. Message Queue Processing
+     - Receive assigned messages (e.g., 20 messages for account)
+     - Process one message at a time in SafeMode
+
+  3. Per Message Execution:
+     a. Select recipient from message queue
+     b. Open chat window
+     c. Apply behavioral randomization (typing simulation)
+     d. Send message with randomized timing
+     e. Wait for delivery confirmation
+     f. Log result and update safety score
+
+  4. Account-Level Controls:
+     - Monitor delivery rate per account
+     - Rotate device fingerprint every 10 messages
+     - Change proxy IP every 10-20 messages
+     - Force session break after 50 messages
+     - Check daily limits (100 messages/account)
+
+  5. Error Handling Per Account:
+     - If message fails: retry with backoff
+     - If account restricted: mark suspicious, switch to next
+     - If proxy fails: rotate to new proxy
+     - If session expires: re-authenticate
+
+#### 4. Timing Randomization Algorithm
+For each message in the 100:
+
+Base Delay = GenerateRandom(1, 7) seconds
+Jitter = GenerateRandom(-0.5, +0.5) seconds
+Total Delay = Base Delay + Jitter
+
+Every 10th message: Add Long Pause
+  Long Pause = GenerateRandom(30, 120) seconds
+
+Every 50th message: Add Session Break
+  Session Break = GenerateRandom(300, 900) seconds (5-15 minutes)
+
+For 1000 messages:
+Same per-message timing, but:
+Every 50th message: Long Pause (60-240 seconds)
+Every 200th message: Session Break (600-1800 seconds / 10-30 minutes)
+Every 500th message: Extended Break (1800-3600 seconds / 30-60 minutes)
+
+#### 5. Device Fingerprint Rotation Per Account
+For each account switch (every 10-20 messages):
+  - Generate new Computer Name: GetComputerName() → "DESKTOP-RANDOM123"
+  - Generate new MAC Address: GetMACAddress() → "00:1A:2B:3C:4D:5E"
+  - Generate new Local IP: GetLocalIP() → "192.168.1.XXX"
+  - Fetch new Public IP: GetRemoteIP() → Via proxy service
+  - Update WebView2 headers with new profile
+  - Clear browser cache/cookies for clean session
+
+For 1000 messages:
+Rotate device fingerprint every 20-40 messages to handle larger volume.
+
+#### 6. Behavioral Pattern Randomization Per Message
+Message Content Variation:
+  - Apply spin tags: {Hello|Hi|Hey} {there|buddy|friend}!
+  - Personalize: {name}, {date}, {time}
+  - Language variation: Same meaning, different phrasing
+
+Typing Simulation (Human-like):
+  - Per character: 50-200ms delay (randomized)
+  - Between words: 100-300ms pause
+  - Between sentences: 1-3 seconds pause
+  - "Thinking" pause: 2-5 seconds before send
+  - Occasional typos correction: 1-2 seconds delay
+
+Same for 1000 messages, but increase variation frequency.
+
+#### 7. Safety Score Calculation & Monitoring
+Initial Score = 60/100 (after account warming)
+
+For each batch of 10 messages:
+  Activity Score += 5 points (up to 30 max)
+  Trust Score += 3 points (up to 30 max)
+  Pattern Score += 2 points (up to 20 max)
+
+Final Score = (Activity × 0.3) + (Age × 0.2) + (Trust × 0.3) + (Pattern × 0.2)
+
+Dynamic Adjustments:
+  If Score < 80: Reduce speed, add delays
+  If Score < 70: Pause campaign, warm accounts more
+  If Score > 90: Can increase speed slightly
+
+For 1000 messages:
+Monitor score more frequently, pause if drops below 85.
+
+#### 8. Error Handling & Recovery Per Account
+For each message:
+  - Send in SafeMode = True (isolated sending)
+  - Wait for delivery confirmation (check mark appears)
+  - If error: Retry with exponential backoff (1s, 2s, 4s, 8s)
+  - If 3 failures: Mark account suspicious, rotate to next account
+  - If delivery rate < 95%: Add 2-3 second delays
+  - If "Unusual activity": Immediate pause, investigate
+
+Account Recovery:
+  - Re-warm suspicious accounts
+  - Change proxy/IP completely
+  - Generate new device fingerprint
+  - Wait 24-48 hours before reuse
+
+#### 9. Complete Proxy & Network Obfuscation System
+IP Rotation Strategy:
+  - Change public IP every 10-20 messages
+  - Use residential proxies (real home IPs) - RECOMMENDED
+  - Alternative: VPN with rotating servers
+  - Never reuse same IP within 24 hours
+
+Proxy Types & Selection:
+  1. Residential Proxies (Best):
+     - Real ISP IPs from homes/businesses
+     - High trust score with WhatsApp
+     - Services: Bright Data, Oxylabs, Smart Proxy
+     - Cost: $500-2000/month for 100-1000 IPs
+
+  2. Mobile Proxies:
+     - Real mobile carrier IPs
+     - Very high trust (looks like phone app)
+     - Services: Mobile Proxy, Proxymesh
+     - Cost: Higher than residential
+
+  3. Data Center Proxies (Avoid for WhatsApp):
+     - Server IPs, easily detected
+     - Low trust score
+     - Cheap but ineffective
+
+Proxy Integration Per Account:
+  - Each account gets unique proxy
+  - Rotate proxy every 10-20 messages
+  - Test proxy speed/latency before use
+  - Monitor proxy health (block rate < 5%)
+
+MAC Spoofing:
+  - Randomize per session: "00:1A:2B:3C:4D:5E"
+  - Hardware-level spoofing (if supported)
+  - Software-level via registry (Windows)
+
+VPN Configuration (Alternative):
+  - NordVPN / ExpressVPN / ProtonVPN
+  - Change server per account/session
+  - Multiple accounts per provider
+  - Geographic diversity (match target region)
+
+#### 10. Session Management & Account Rotation
+After 50 messages per account: Force session break
+  - Clear WebView2 cookies/cache
+  - Generate new device fingerprint
+  - Change proxy to new IP
+  - Wait 1-5 minutes before resuming
+  - Resume with fresh session
+
+Daily Limit Enforcement:
+  - Max 100 messages per account per day
+  - Max 500 messages total per day
+  - Monitor for "unusual activity" warnings
+  - Automatic throttling if limits approached
+
+For 1000 messages: Session breaks every 100 messages, scaled daily limits.
+
+#### 11. Browser & User-Agent Spoofing
+WebView2 Integration:
+  - Uses real Chromium engine
+  - Randomized User-Agent per session
+  - Varied browser headers
+
+User-Agent Rotation:
+  Original: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
+  Variations:
+    • Firefox: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0)
+    • Safari: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)
+    • Mobile: Mozilla/5.0 (Linux; Android 10; SM-G973F)
+
+Request Headers Manipulation:
+  • User-Agent: Randomized per request
+  • Accept-Language: Varied (en-US, he-IL, etc.)
+  • Accept-Encoding: Different compression
+  • Referer: Spoofed or omitted
+  • DNT (Do Not Track): Varied
+
+#### 12. Account Warming Integration
+Before bulk sending:
+  1. Select 2-5 target accounts per sending account
+  2. Send 20-50 warming messages over 2-3 days
+  3. Use natural conversation patterns
+  4. Build account trust score
+  5. Monitor warming progress
+
+Warming Algorithm:
+  - Day 1: 10-20 messages, 30-60 second delays
+  - Day 2: 15-30 messages, 20-45 second delays
+  - Day 3+: Ready for campaigns
+
+#### 13. Advanced Detection Bypass Techniques
+WhatsApp Detection Methods & Countermeasures:
+
+1. IP Reputation Check:
+   Detection: "Is this IP known for bot activity?"
+   Bypass: Residential proxies, frequent rotation
+
+2. Device Fingerprinting:
+   Detection: MAC + Computer Name + OS + Screen
+   Bypass: Randomize all parameters per session
+
+3. Behavioral Analysis:
+   Detection: Message timing patterns
+   Bypass: Random delays, human-like typing
+
+4. Browser Headers:
+   Detection: User-Agent consistency
+   Bypass: Rotate headers per request
+
+5. Timing Analysis:
+   Detection: Exact delay intervals
+   Bypass: Jitter + randomization
+
+6. Account Pattern:
+   Detection: Bulk from single account
+   Bypass: Multi-account distribution
+
+#### 14. Monitoring & Analytics
+Real-time Monitoring:
+  - Delivery rate per account
+  - Error rate tracking
+  - Proxy performance
+  - Safety score trends
+  - Account health status
+
+Logging:
+  - Message send results
+  - Timing data
+  - Error details
+  - Proxy usage
+  - Device fingerprints used
+
+Alerts:
+  - Delivery rate < 95%
+  - Account restrictions
+  - Proxy failures
+  - Safety score drops
+
+#### 15. Final Computation Summary
+100 Messages Processing:
+  → Distributed across 5-10 accounts (10-20 messages each)
+  → Each account sends with SafeMode + proxy
+  → Randomized timing + unique device profile per account
+  → Proxy rotation every 10-20 messages
+  → Session breaks + fingerprint changes
+  → Result: 95%+ delivery rate, human-like pattern, low ban risk
+
+For 1000 Messages:
+  → Scaled to 20-50 accounts (20-50 messages each)
+  → More frequent rotations, extended breaks
+  → Enhanced monitoring and error handling
+  → Result: Maintains high delivery rate with increased volume
+
+================================================================================
+גרסה בעברית - HEBREW VERSION - מדריך מלא
+================================================================================
+
+מדריך מקיף זה מסביר את המערכת הפנימית האנטי-באן המלאה, כולל שילוב פרוקסי, מנגנון שליחת חשבונות לאחר חלוקה, וכל רכיבי האנטי-באן. האלגוריתם מעבד 100 הודעות (מורחב ל-1000) תוך הבטחת התנהגות דומה לאנושית על פני חשבונות/מכשירים מרובים כדי להימנע מזיהוי של וואטסאפ.
+
+#### 1. זרימת עיבוד הודעות וחלוקה ראשונית
+כאשר מקבלים 100 הודעות לשליחה:
+
+קלט: 100 הודעות (כל אחת עם נמען, תוכן וכו')
+שלבי עיבוד:
+  1. אימות כל ההודעות (בדיקת פורמט, נמענים)
+  2. חישוב חלוקת חשבונות
+  3. הקצאת הודעות לחשבונות עם סיבוב
+  4. אתחול פרמטרי אנטי-באן לכל חשבון
+
+פלט: דפוס שליחה מבוזר על פני חשבונות/מכשירים
+
+לדוגמה 1000 הודעות:
+קלט: 1000 הודעות
+עיבוד: אותו אימות + חלוקה מורחבת
+פלט: חלוקה מורחבת עם יותר חשבונות והפסקות ארוכות יותר
+
+#### 2. חישוב חלוקת חשבונות והקצאה
+סה"כ הודעות: 100
+חשבונות זמינים: N (מינימום 2, מומלץ 5-10)
+
+הודעות לחשבון = 100 / N
+  - דוגמה: עם 5 חשבונות = 20 הודעות כל אחד
+  - דוגמה: עם 10 חשבונות = 10 הודעות כל אחד
+
+אלגוריתם הקצאה:
+  חשבון 1: הודעות 1-10 (או החלק המחושב)
+  חשבון 2: הודעות 11-20
+  ...
+  כלל סיבוב: החלף חשבונות כל 10 הודעות מקסימום כדי להימנע מזיהוי דפוס
+
+ל-1000 הודעות:
+סה"כ הודעות: 1000
+חשבונות זמינים: N (מומלץ 20-50)
+הודעות לחשבון = 1000 / N
+  - דוגמה: עם 25 חשבונות = 40 הודעות כל אחד
+כלל סיבוב: החלף חשבונות כל 10-20 הודעות
+
+#### 3. איך כל חשבון שולח לאחר החלוקה
+לאחר החלוקה, כל חשבון עוקב אחר פרוטוקול השליחה הזה:
+
+זרימת שליחה לחשבון:
+  1. טען פרופיל חשבון
+     - התחבר ל-WhatsApp Web עם QR/טוקן של החשבון
+     - אתחל WebView2 עם טביעת אצבע ספציפית לחשבון
+     - הגדר פרוקסי/VPN עבור IP של החשבון
+
+  2. עיבוד תור הודעות
+     - קבל הודעות מוקצות (למשל, 20 הודעות לחשבון)
+     - עבד הודעה אחת בכל פעם ב-SafeMode
+
+  3. ביצוע להודעה:
+     א. בחר נמען מתור ההודעות
+     ב. פתח חלון צ'אט
+     ג. החל אקראיות התנהגותית (סימולציית הקלדה)
+     ד. שלח הודעה עם תזמון אקראי
+     ה. המתן לאישור משלוח
+     ו. רשום תוצאה ועדכן ציון בטיחות
+
+  4. בקרות ברמת חשבון:
+     - פקח על שיעור משלוח לחשבון
+     - סובב טביעת אצבע מכשיר כל 10 הודעות
+     - שנה IP פרוקסי כל 10-20 הודעות
+     - אכוף הפסקת סשן אחרי 50 הודעות
+     - בדוק גבולות יומיים (100 הודעות/חשבון)
+
+  5. טיפול שגיאות לחשבון:
+     - אם הודעה נכשלת: נסה שוב עם backoff
+     - אם חשבון מוגבל: סמן חשוד, עבר לבא
+     - אם פרוקסי נכשל: סובב לפרוקסי חדש
+     - אם סשן פג תוקף: אימות מחדש
+
+#### 4. אלגוריתם אקראיות תזמון
+לכל הודעה ב-100:
+
+עיכוב בסיס = GenerateRandom(1, 7) שניות
+רעידה = GenerateRandom(-0.5, +0.5) שניות
+עיכוב כולל = עיכוב בסיס + רעידה
+
+כל הודעה 10: הוסף הפסקה ארוכה
+  הפסקה ארוכה = GenerateRandom(30, 120) שניות
+
+כל הודעה 50: הוסף הפסקת סשן
+  הפסקת סשן = GenerateRandom(300, 900) שניות (5-15 דקות)
+
+ל-1000 הודעות:
+אותו תזמון להודעה, אבל:
+כל הודעה 50: הפסקה ארוכה (60-240 שניות)
+כל הודעה 200: הפסקת סשן (600-1800 שניות / 10-30 דקות)
+כל הודעה 500: הפסקה מורחבת (1800-3600 שניות / 30-60 דקות)
+
+#### 5. סיבוב טביעת אצבע מכשיר לחשבון
+לכל החלפת חשבון (כל 10-20 הודעות):
+  - צור שם מחשב חדש: GetComputerName() → "DESKTOP-RANDOM123"
+  - צור כתובת MAC חדשה: GetMACAddress() → "00:1A:2B:3C:4D:5E"
+  - צור IP מקומי חדש: GetLocalIP() → "192.168.1.XXX"
+  - קבל IP ציבורי חדש: GetRemoteIP() → דרך שירות פרוקסי
+  - עדכן כותרות WebView2 עם פרופיל חדש
+  - נקה מטמון דפדפן/cookies לסשן נקי
+
+ל-1000 הודעות:
+סובב טביעת אצבע כל 20-40 הודעות לטיפול בנפח גדול יותר.
+
+#### 6. אקראיות דפוס התנהגות להודעה
+שינוי תוכן הודעה:
+  - החל תגי ספין: {שלום|היי|מה קורה} {שם|חבר|אחי}!
+  - התאם אישית: {name}, {time}, {date}
+  - שינוי שפה: אותו משמעות, ביטויים שונים
+
+סימולציית הקלדה (דומה לאנושית):
+  - לתו: 50-200ms עיכוב (אקראי)
+  - בין מילים: 100-300ms הפסקה
+  - בין משפטים: 1-3 שניות הפסקה
+  - "חשיבה" הפסקה: 2-5 שניות לפני שליחה
+  - תיקון טעויות מדי פעם: 1-2 שניות עיכוב
+
+אותו ל-1000 הודעות, אבל הגבר תדירות שינוי.
+
+#### 7. חישוב ציון בטיחות ומעקב
+ציון התחלתי = 60/100 (אחרי חימום חשבון)
+
+לכל קבוצה של 10 הודעות:
+  ציון פעילות += 5 נקודות (עד 30 מקס)
+  ציון אמון += 3 נקודות (עד 30 מקס)
+  ציון דפוס += 2 נקודות (עד 20 מקס)
+
+ציון סופי = (פעילות × 0.3) + (גיל × 0.2) + (אמון × 0.3) + (דפוס × 0.2)
+
+התאמות דינמיות:
+  אם ציון < 80: הפחת מהירות, הוסף עיכובים
+  אם ציון < 70: השהה קמפיין, חמם חשבונות יותר
+  אם ציון > 90: ניתן להגביר מהירות מעט
+
+ל-1000 הודעות:
+פקח על ציון בתדירות גבוהה יותר, השהה אם יורד מתחת ל-85.
+
+#### 8. טיפול שגיאות והתאוששות לחשבון
+לכל הודעה:
+  - שלח ב-SafeMode = True (שליחה מבודדת)
+  - המתן לאישור משלוח (סימן וי מופיע)
+  - אם שגיאה: נסה שוב עם backoff אקספוננציאלי (1s, 2s, 4s, 8s)
+  - אם 3 כשלונות: סמן חשבון חשוד, סובב לחשבון הבא
+  - אם שיעור משלוח < 95%: הוסף 2-3 שניות עיכוב
+  - אם "פעילות לא רגילה": השהה מיידית, חקור
+
+התאוששות חשבון:
+  - חמם מחדש חשבונות חשודים
+  - שנה IP/פרוקסי לחלוטין
+  - צור טביעת אצבע מכשיר חדשה
+  - המתן 24-48 שעות לפני שימוש חוזר
+
+#### 9. מערכת הסתרת רשת ופרוקסי מלאה
+אסטרטגיית סיבוב IP:
+  - שנה IP ציבורי כל 10-20 הודעות
+  - השתמש בפרוקסי מגורים (IP אמיתיים של בתים) - מומלץ
+  - חלופה: VPN עם שרתים מסתובבים
+  - אל תשתמש באותו IP תוך 24 שעות
+
+סוגי פרוקסי ובחירה:
+  1. פרוקסי מגורים (הטוב ביותר):
+     - IP אמיתיים של ספקי אינטרנט מבתים/עסקים
+     - ציון אמון גבוה עם וואטסאפ
+     - שירותים: Bright Data, Oxylabs, Smart Proxy
+     - עלות: $500-2000/חודש ל-100-1000 IP
+
+  2. פרוקסי סלולריים:
+     - IP אמיתיים של ספקי סלולר
+     - אמון גבוה מאוד (נראה כמו אפליקציית טלפון)
+     - שירותים: Mobile Proxy, Proxymesh
+     - עלות: גבוהה יותר ממגורים
+
+  3. פרוקסי שרתים (הימנע מוואטסאפ):
+     - IP שרתים, קלים לזיהוי
+     - ציון אמון נמוך
+     - זולים אבל לא יעילים
+
+שילוב פרוקסי לחשבון:
+  - כל חשבון מקבל פרוקסי ייחודי
+  - סובב פרוקסי כל 10-20 הודעות
+  - בדוק מהירות/זמן אחזור של פרוקסי לפני שימוש
+  - פקח על בריאות פרוקסי (שיעור חסימה < 5%)
+
+זיוף MAC:
+  - אקראי לכל סשן: "00:1A:2B:3C:4D:5E"
+  - זיוף ברמת חומרה (אם נתמך)
+  - ברמת תוכנה דרך registry (Windows)
+
+תצורת VPN (חלופה):
+  - NordVPN / ExpressVPN / ProtonVPN
+  - שנה שרת לכל חשבון/סשן
+  - חשבונות מרובים לכל ספק
+  - גיווג גיאוגרפי (התאם לאזור יעד)
+
+#### 10. ניהול סשנים וסיבוב חשבונות
+אחרי 50 הודעות לחשבון: אכוף הפסקת סשן
+  - נקה cookies/מטמון WebView2
+  - צור טביעת אצבע מכשיר חדשה
+  - שנה פרוקסי ל-IP חדש
+  - המתן 1-5 דקות לפני חידוש
+  - חדש עם פרופיל נקי
+
+אכיפת גבול יומי:
+  - מקס 100 הודעות לחשבון ליום
+  - מקס 500 הודעות סה"כ ליום
+  - פקח על אזהרות "פעילות לא רגילה"
+  - האטה אוטומטית כשמתקרב לגבולות
+
+ל-1000 הודעות: הפסקות סשן כל 100 הודעות, גבולות יומיים מורחבים.
+
+#### 11. זיוף דפדפן ו-User-Agent
+שילוב WebView2:
+  - משתמש במנוע Chromium אמיתי
+  - User-Agent אקראי לכל סשן
+  - כותרות דפדפן משתנות
+
+סיבוב User-Agent:
+  מקורי: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
+  וריאציות:
+    • Firefox: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0)
+    • Safari: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)
+    • Chrome נייד: Mozilla/5.0 (Linux; Android 10; SM-G973F)
+
+מניפולציית כותרות בקשה:
+  • User-Agent: אקראי לבקשה
+  • Accept-Language: משתנה (en-US, he-IL וכו')
+  • Accept-Encoding: דחיסה שונה
+  • Referer: מזויף או מושמט
+  • DNT (Do Not Track): משתנה
+
+#### 12. שילוב חימום חשבונות
+לפני שליחה בכמות גדולה:
+  1. בחר 2-5 חשבונות יעד לחשבון השולח
+  2. שלח 20-50 הודעות חימום על פני 2-3 ימים
+  3. השתמש בדפוסי שיחה טבעיים
+  4. בנה ציון אמון לחשבון
+  5. פקח על התקדמות חימום
+
+אלגוריתם חימום:
+  - יום 1: 10-20 הודעות, 30-60 שניות עיכוב
+  - יום 2: 15-30 הודעות, 20-45 שניות עיכוב
+  - יום 3+: מוכן לקמפיינים
+
+#### 13. טכניקות עקיפת זיהוי מתקדמות
+שיטות זיהוי של וואטסאפ וצעדי נגד:
+
+1. בדיקת מוניטין IP:
+   זיהוי: "האם IP זה ידוע לפעילות בוט?"
+   עקיפה: פרוקסי מגורים, סיבוב תכוף
+
+2. טביעת אצבע מכשיר:
+   זיהוי: MAC + שם מחשב + OS + מסך
+   עקיפה: אקראי את כל הפרמטרים לכל סשן
+
+3. ניתוח התנהגות:
+   זיהוי: דפוסי תזמון הודעות
+   עקיפה: עיכובים אקראיים, הקלדה דומה לאנושית
+
+4. כותרות דפדפן:
+   זיהוי: עקביות User-Agent
+   עקיפה: סובב כותרות לבקשה
+
+5. ניתוח תזמון:
+   זיהוי: מרווחי עיכוב מדויקים
+   עקיפה: רעידה + אקראיות
+
+6. דפוס חשבון:
+   זיהוי: כמות גדולה מחשבון יחיד
+   עקיפה: חלוקה מרובה חשבונות
+
+#### 14. מעקב וניתוח
+מעקב בזמן אמת:
+  - שיעור משלוח לחשבון
+  - מעקב שיעור שגיאות
+  - ביצועי פרוקסי
+  - מגמות ציון בטיחות
+  - סטטוס בריאות חשבון
+
+רישום:
+  - תוצאות שליחת הודעות
+  - נתוני תזמון
+  - פרטי שגיאות
+  - שימוש בפרוקסי
+  - טביעות אצבע מכשיר בשימוש
+
+התראות:
+  - שיעור משלוח < 95%
+  - הגבלות חשבון
+  - כשלונות פרוקסי
+  - ירידות ציון בטיחות
+
+#### 15. סיכום חישוב סופי
+עיבוד 100 הודעות:
+  → מבוזר על פני 5-10 חשבונות (10-20 הודעות כל אחד)
+  → כל חשבון שולח עם SafeMode + פרוקסי
+  → תזמון אקראי + פרופיל מכשיר ייחודי לחשבון
+  → סיבוב פרוקסי כל 10-20 הודעות
+  → הפסקות סשן + שינויי טביעת אצבע
+  → תוצאה: שיעור משלוח 95%+, דפוס דומה לאנושי, סיכון באן נמוך
+
+ל-1000 הודעות:
+  → מורחב ל-20-50 חשבונות (20-50 הודעות כל אחד)
+  → סיבובים תכופים יותר, הפסקות מורחבות
+  → מעקב וטיפול שגיאות משופרים
+  → תוצאה: שומר על שיעור משלוח גבוה עם נפח מוגבר
+
+================================================================================
+                              סוף המסמך
+================================================================================
