@@ -9,6 +9,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/whatsapp-automation/worker/internal/config"
 	"github.com/whatsapp-automation/worker/internal/fingerprint"
 	"github.com/whatsapp-automation/worker/internal/whatsapp"
 )
@@ -19,20 +20,61 @@ type Server struct {
 	DeviceSeed   string
 	ProxyCountry string
 	Fingerprint  fingerprint.DeviceFingerprint
+	ProxyConfig  *config.ProxyConfig
 	client       *whatsapp.ClientManager
+	monitor      *whatsapp.ConnectionMonitor
 }
 
 // NewServer creates a new API server instance
-func NewServer(workerID, deviceSeed, proxyCountry string, fp fingerprint.DeviceFingerprint) (*Server, error) {
-	client := whatsapp.NewClientManager(fp, proxyCountry, workerID)
+func NewServer(workerID, deviceSeed, proxyCountry string, fp fingerprint.DeviceFingerprint, proxyConfig *config.ProxyConfig) (*Server, error) {
+	client := whatsapp.NewClientManager(fp, proxyCountry, workerID, proxyConfig)
+	monitor := whatsapp.NewConnectionMonitor(client)
 
 	return &Server{
 		WorkerID:     workerID,
 		DeviceSeed:   deviceSeed,
 		ProxyCountry: proxyCountry,
 		Fingerprint:  fp,
+		ProxyConfig:  proxyConfig,
 		client:       client,
+		monitor:      monitor,
 	}, nil
+}
+
+// StartBackgroundServices starts the connection monitor, auto warmup, and loads existing sessions
+func (s *Server) StartBackgroundServices(ctx context.Context) {
+	// Load existing sessions from disk
+	log.Printf("[STARTUP] Loading existing sessions...")
+	loaded, skipped, err := s.client.LoadExistingSessions(ctx)
+	if err != nil {
+		log.Printf("[STARTUP] Error loading sessions: %v", err)
+	} else {
+		log.Printf("[STARTUP] Loaded %d sessions, skipped %d invalid sessions", loaded, skipped)
+	}
+	
+	// Clean up any accounts that failed to load properly
+	removed := s.client.CleanupInactiveAccounts()
+	if len(removed) > 0 {
+		log.Printf("[STARTUP] Cleaned up %d inactive accounts", len(removed))
+	}
+	
+	// Start the connection monitor
+	s.monitor.Start()
+	log.Printf("[STARTUP] Connection monitor started")
+	
+	// Start auto warmup for new accounts
+	s.client.StartAutoWarmup()
+	log.Printf("[STARTUP] Auto warmup system started")
+}
+
+// GetClientManager returns the client manager (for external access if needed)
+func (s *Server) GetClientManager() *whatsapp.ClientManager {
+	return s.client
+}
+
+// GetMonitor returns the connection monitor (for external access if needed)
+func (s *Server) GetMonitor() *whatsapp.ConnectionMonitor {
+	return s.monitor
 }
 
 // RegisterRoutes registers all HTTP routes
@@ -51,6 +93,13 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	r.HandleFunc("/accounts/disconnect", s.handleAccountsDisconnect).Methods(http.MethodPost)
 	r.HandleFunc("/accounts/status", s.handleAccountsStatus).Methods(http.MethodGet)
 	r.HandleFunc("/accounts", s.handleAccountsList).Methods(http.MethodGet)
+	r.HandleFunc("/accounts/cleanup", s.handleAccountsCleanup).Methods(http.MethodPost) // Remove inactive accounts
+	
+	// Monitor endpoints
+	r.HandleFunc("/monitor/stats", s.handleMonitorStats).Methods(http.MethodGet)
+	
+	// Warmup endpoints
+	r.HandleFunc("/warmup/status", s.handleWarmupStatus).Methods(http.MethodGet)
 }
 
 // writeJSON writes a JSON response
@@ -356,5 +405,43 @@ func (s *Server) handleAccountsList(w http.ResponseWriter, r *http.Request) {
 		"success":  true,
 		"count":    len(accounts),
 		"accounts": accounts,
+	})
+}
+
+// POST /accounts/cleanup - Remove all accounts that are not logged in
+func (s *Server) handleAccountsCleanup(w http.ResponseWriter, r *http.Request) {
+	removed := s.client.CleanupInactiveAccounts()
+	
+	// Reset monitor failures for removed accounts
+	for _, phone := range removed {
+		s.monitor.ResetFailures(phone)
+	}
+	
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":         true,
+		"removed_count":   len(removed),
+		"removed_phones":  removed,
+		"message":         "Inactive accounts removed. They need manual re-pairing.",
+	})
+}
+
+// GET /monitor/stats - Get connection monitor statistics
+func (s *Server) handleMonitorStats(w http.ResponseWriter, r *http.Request) {
+	stats := s.monitor.GetReconnectStats()
+	
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"monitor": stats,
+	})
+}
+
+// GET /warmup/status - Get warmup status for all accounts
+func (s *Server) handleWarmupStatus(w http.ResponseWriter, r *http.Request) {
+	statuses := s.client.GetWarmupStatus()
+	
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":  true,
+		"count":    len(statuses),
+		"accounts": statuses,
 	})
 }

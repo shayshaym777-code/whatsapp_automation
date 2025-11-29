@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/whatsapp-automation/worker/internal/api"
+	"github.com/whatsapp-automation/worker/internal/config"
 	"github.com/whatsapp-automation/worker/internal/fingerprint"
 )
 
@@ -38,6 +40,9 @@ func main() {
 	proxyCountry := getEnv("PROXY_COUNTRY", "US")
 	port := getEnv("WORKER_PORT", "3001")
 
+	// Load proxy configuration
+	proxyConfig := config.LoadProxyConfig()
+
 	// Generate deterministic fingerprint from seed
 	fp := fingerprint.Generate(deviceSeed, proxyCountry)
 
@@ -50,12 +55,21 @@ func main() {
 	log.Printf("Computer Name: %s", fp.ComputerName)
 	log.Printf("Timezone:      %s", fp.Timezone)
 	log.Printf("Language:      %s", fp.Language)
+	if proxyConfig.Enabled {
+		log.Printf("Proxy:         %s", proxyConfig.String())
+	} else {
+		log.Printf("Proxy:         disabled")
+	}
 	log.Printf("================================")
 
-	server, err := api.NewServer(workerID, deviceSeed, proxyCountry, fp)
+	server, err := api.NewServer(workerID, deviceSeed, proxyCountry, fp, proxyConfig)
 	if err != nil {
 		log.Fatalf("Failed to initialize worker server: %v", err)
 	}
+
+	// Start background services (load sessions, start monitor)
+	ctx := context.Background()
+	server.StartBackgroundServices(ctx)
 
 	router := mux.NewRouter()
 	router.Use(loggingMiddleware)

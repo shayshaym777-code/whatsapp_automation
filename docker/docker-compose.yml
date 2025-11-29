@@ -11,7 +11,6 @@ version: '3.8'
 #   - worker-1: US accounts (+1) on port 3001
 #   - worker-2: Israel accounts (+972) on port 3002
 #   - worker-3: UK accounts (+44) on port 3003
-#   - dashboard: React Web UI (port 8080)
 #
 # Setup:
 #   1. Copy env.template to .env: cp env.template .env
@@ -150,6 +149,12 @@ services:
       PROXY_COUNTRY: ${WORKER_1_COUNTRY:-US}
       MASTER_URL: http://master:5000
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Proxy configuration - US proxy
+      PROXY_HOST: ${PROXY_HOST:-geo.iproyal.com}
+      PROXY_PORT: ${PROXY_PORT:-12321}
+      PROXY_USER: ${PROXY_USER:-8ou9yomVguVTDM5q}
+      PROXY_PASS: ${WORKER_1_PROXY_PASS:-k5CuWpGcfNEZZX23_country-us_streaming-1}
+      PROXY_TYPE: ${PROXY_TYPE:-socks5}
     volumes:
       - worker1_sessions:/data/sessions
       - worker1_qrcodes:/data/qrcodes
@@ -186,6 +191,12 @@ services:
       PROXY_COUNTRY: ${WORKER_2_COUNTRY:-IL}
       MASTER_URL: http://master:5000
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Proxy configuration - Israel proxy
+      PROXY_HOST: ${PROXY_HOST:-geo.iproyal.com}
+      PROXY_PORT: ${PROXY_PORT:-12321}
+      PROXY_USER: ${PROXY_USER:-8ou9yomVguVTDM5q}
+      PROXY_PASS: ${WORKER_2_PROXY_PASS:-k5CuWpGcfNEZZX23_country-il_streaming-1}
+      PROXY_TYPE: ${PROXY_TYPE:-socks5}
     volumes:
       - worker2_sessions:/data/sessions
       - worker2_qrcodes:/data/qrcodes
@@ -222,6 +233,12 @@ services:
       PROXY_COUNTRY: ${WORKER_3_COUNTRY:-GB}
       MASTER_URL: http://master:5000
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Proxy configuration - US proxy (until GB proxy is available)
+      PROXY_HOST: ${PROXY_HOST:-geo.iproyal.com}
+      PROXY_PORT: ${PROXY_PORT:-12321}
+      PROXY_USER: ${PROXY_USER:-8ou9yomVguVTDM5q}
+      PROXY_PASS: ${WORKER_3_PROXY_PASS:-k5CuWpGcfNEZZX23_country-us_streaming-1}
+      PROXY_TYPE: ${PROXY_TYPE:-socks5}
     volumes:
       - worker3_sessions:/data/sessions
       - worker3_qrcodes:/data/qrcodes
@@ -237,29 +254,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-    restart: unless-stopped
-    networks:
-      - wa_network
-
-  # ============================================
-  # DASHBOARD - React Web UI
-  # ============================================
-  dashboard:
-    build:
-      context: ../dashboard
-      dockerfile: Dockerfile
-    container_name: wa_dashboard
-    ports:
-      - "${DASHBOARD_PORT:-8080}:8080"
-    depends_on:
-      master:
-        condition: service_healthy
-      worker-1:
-        condition: service_healthy
-      worker-2:
-        condition: service_healthy
-      worker-3:
-        condition: service_healthy
     restart: unless-stopped
     networks:
       - wa_network

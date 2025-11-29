@@ -2,6 +2,7 @@ package whatsapp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -22,6 +23,7 @@ import (
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/whatsapp-automation/worker/internal/config"
 	"github.com/whatsapp-automation/worker/internal/fingerprint"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -43,6 +45,12 @@ type ClientManager struct {
 	// Account management
 	accounts map[string]*AccountClient // phone -> client
 	mu       sync.RWMutex
+
+	// Auto warmup control
+	warmupStop chan struct{}
+
+	// Proxy configuration
+	proxyConfig *config.ProxyConfig
 }
 
 // AccountClient represents a connected WhatsApp account
@@ -54,10 +62,20 @@ type AccountClient struct {
 	LoggedIn  bool
 	QRCode    string // Base64 QR code if pending login
 	QRPath    string // Path to QR code image
+
+	// State tracking to reduce log spam
+	lastConnectedState bool
+	lastLoggedInState  bool
+	lastStateChange    time.Time
+
+	// Warmup tracking for new accounts
+	CreatedAt      time.Time // When account was first connected
+	LastWarmupSent time.Time // Last warmup message time
+	WarmupComplete bool      // True after 3 days of warmup
 }
 
 // NewClientManager creates a new client manager for this worker
-func NewClientManager(fp fingerprint.DeviceFingerprint, proxyCountry, workerID string) *ClientManager {
+func NewClientManager(fp fingerprint.DeviceFingerprint, proxyCountry, workerID string, proxyConfig *config.ProxyConfig) *ClientManager {
 	// Ensure directories exist
 	os.MkdirAll(QRCodeDir, 0755)
 	os.MkdirAll(getSessionsDir(), 0755)
@@ -67,7 +85,36 @@ func NewClientManager(fp fingerprint.DeviceFingerprint, proxyCountry, workerID s
 		ProxyCountry: proxyCountry,
 		WorkerID:     workerID,
 		accounts:     make(map[string]*AccountClient),
+		proxyConfig:  proxyConfig,
 	}
+}
+
+// createClientWithProxy creates a WhatsApp client with optional proxy support
+func (m *ClientManager) createClientWithProxy(device *store.Device, clientLog waLog.Logger) (*whatsmeow.Client, error) {
+	client := whatsmeow.NewClient(device, clientLog)
+	client.EnableAutoReconnect = true
+	client.AutoTrustIdentity = true
+
+	// Configure proxy if enabled
+	if m.proxyConfig != nil && m.proxyConfig.Enabled {
+		proxyURL := m.proxyConfig.GetURL()
+		if proxyURL != "" {
+			// Use whatsmeow's built-in SetProxyAddress which supports SOCKS5 with auth
+			// Format: socks5://user:pass@host:port
+			err := client.SetProxyAddress(proxyURL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to set proxy address: %w", err)
+			}
+			log.Printf("[Proxy] Using proxy: %s", m.proxyConfig.String())
+		}
+	}
+
+	return client, nil
+}
+
+// GetProxyConfig returns the current proxy configuration
+func (m *ClientManager) GetProxyConfig() *config.ProxyConfig {
+	return m.proxyConfig
 }
 
 func getSessionsDir() string {
@@ -140,11 +187,13 @@ func (m *ClientManager) ConnectAccount(ctx context.Context, phone string) (*Conn
 	store.DeviceProps.PlatformType = &platform
 	store.DeviceProps.Os = &osName
 
-	// Create WhatsApp client
+	// Create WhatsApp client with proxy support
 	clientLog := waLog.Stdout("Client-"+phone, "INFO", true)
-	client := whatsmeow.NewClient(device, clientLog)
-	client.EnableAutoReconnect = true
-	client.AutoTrustIdentity = true
+	client, err := m.createClientWithProxy(device, clientLog)
+	if err != nil {
+		container.Close()
+		return nil, fmt.Errorf("failed to create client with proxy: %w", err)
+	}
 
 	// Create account entry
 	acc := &AccountClient{
@@ -154,6 +203,12 @@ func (m *ClientManager) ConnectAccount(ctx context.Context, phone string) (*Conn
 		Connected: false,
 		LoggedIn:  false,
 	}
+
+	// Load existing metadata or set as new account
+	meta := m.loadAccountMeta(phone)
+	m.applyAccountMeta(acc, meta)
+	isNewAccount := meta == nil
+
 	m.accounts[phone] = acc
 
 	// Set up event handler
@@ -175,6 +230,11 @@ func (m *ClientManager) ConnectAccount(ctx context.Context, phone string) (*Conn
 
 			if acc.LoggedIn {
 				log.Printf("[%s] Connected with existing session", phone)
+				// Save meta if new account
+				if isNewAccount {
+					m.saveAccountMeta(phone, acc)
+					log.Printf("[%s] New account - warmup period started (3 days)", phone)
+				}
 				return &ConnectResult{
 					Status:   "connected",
 					Phone:    phone,
@@ -403,11 +463,13 @@ func (m *ClientManager) ConnectWithPairingCode(ctx context.Context, phone string
 	store.DeviceProps.PlatformType = &platform
 	store.DeviceProps.Os = &osName
 
-	// Create WhatsApp client
+	// Create WhatsApp client with proxy support
 	clientLog := waLog.Stdout("Client-"+phone, "INFO", true)
-	client := whatsmeow.NewClient(device, clientLog)
-	client.EnableAutoReconnect = true
-	client.AutoTrustIdentity = true
+	client, err := m.createClientWithProxy(device, clientLog)
+	if err != nil {
+		container.Close()
+		return nil, fmt.Errorf("failed to create client with proxy: %w", err)
+	}
 
 	// Create account entry
 	acc := &AccountClient{
@@ -417,6 +479,12 @@ func (m *ClientManager) ConnectWithPairingCode(ctx context.Context, phone string
 		Connected: false,
 		LoggedIn:  false,
 	}
+
+	// Load existing metadata or set as new account
+	metaPair := m.loadAccountMeta(phone)
+	m.applyAccountMeta(acc, metaPair)
+	isNewAccountPair := metaPair == nil
+
 	m.accounts[phone] = acc
 
 	// Set up event handler
@@ -437,6 +505,11 @@ func (m *ClientManager) ConnectWithPairingCode(ctx context.Context, phone string
 
 			if acc.LoggedIn {
 				log.Printf("[%s] Connected with existing session", phone)
+				// Save meta if new account
+				if isNewAccountPair {
+					m.saveAccountMeta(phone, acc)
+					log.Printf("[%s] New account - warmup period started (3 days)", phone)
+				}
 				return &ConnectResult{
 					Status:   "connected",
 					Phone:    phone,
@@ -497,45 +570,72 @@ func (m *ClientManager) generateQRImage(phone, code string) (string, error) {
 }
 
 // handleEvent processes WhatsApp events for an account
+// Only logs state CHANGES to reduce log spam
 func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 	m.mu.Lock()
 	acc, exists := m.accounts[phone]
-	m.mu.Unlock()
-
 	if !exists {
+		m.mu.Unlock()
 		return
 	}
 
 	switch v := evt.(type) {
 	case *events.Connected:
-		log.Printf("[%s] Connected to WhatsApp", phone)
-		m.mu.Lock()
+		// Only log if state actually changed
+		if !acc.lastConnectedState || !acc.lastLoggedInState {
+			log.Printf("[%s] Connected to WhatsApp", phone)
+		}
 		acc.Connected = true
 		acc.LoggedIn = true
 		acc.QRCode = ""
+		acc.lastConnectedState = true
+		acc.lastLoggedInState = true
+		acc.lastStateChange = time.Now()
 		m.mu.Unlock()
 
 	case *events.LoggedOut:
+		// Always log logout - it's important
 		log.Printf("[%s] Logged out from WhatsApp: %v", phone, v.Reason)
-		m.mu.Lock()
 		acc.LoggedIn = false
+		acc.lastLoggedInState = false
+		acc.lastStateChange = time.Now()
 		m.mu.Unlock()
 
 	case *events.Disconnected:
-		log.Printf("[%s] Disconnected from WhatsApp", phone)
-		m.mu.Lock()
+		// Only log if state actually changed
+		if acc.lastConnectedState {
+			log.Printf("[%s] Disconnected from WhatsApp", phone)
+		}
 		acc.Connected = false
+		acc.lastConnectedState = false
+		acc.lastStateChange = time.Now()
 		m.mu.Unlock()
 
 	case *events.PairSuccess:
 		log.Printf("[%s] Successfully paired with device: %s", phone, v.ID.String())
-		m.mu.Lock()
 		acc.LoggedIn = true
 		acc.QRCode = ""
+		acc.lastLoggedInState = true
+		acc.lastStateChange = time.Now()
+		// For new accounts, CreatedAt is already set. Save meta now.
+		if acc.CreatedAt.IsZero() {
+			acc.CreatedAt = time.Now()
+		}
 		m.mu.Unlock()
+		// Save metadata for new account
+		if err := m.saveAccountMeta(phone, acc); err != nil {
+			log.Printf("[%s] Failed to save account meta after pairing: %v", phone, err)
+		} else {
+			log.Printf("[%s] New account - warmup period started (3 days)", phone)
+		}
 
 	case *events.Message:
-		log.Printf("[%s] Received message from %s", phone, v.Info.Sender.String())
+		m.mu.Unlock()
+		// Don't log every message - too spammy
+		// log.Printf("[%s] Received message from %s", phone, v.Info.Sender.String())
+		
+	default:
+		m.mu.Unlock()
 	}
 }
 
@@ -705,6 +805,188 @@ func (m *ClientManager) HealthSummary() map[string]interface{} {
 	}
 }
 
+// CleanupInactiveAccounts removes accounts that are not logged in
+// These accounts need manual re-pairing and should not stay in memory
+func (m *ClientManager) CleanupInactiveAccounts() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var removed []string
+	for phone, account := range m.accounts {
+		if !account.LoggedIn {
+			// Disconnect client if exists
+			if account.Client != nil {
+				account.Client.Disconnect()
+			}
+			// Close container/database
+			if account.Container != nil {
+				account.Container.Close()
+			}
+			delete(m.accounts, phone)
+			removed = append(removed, phone)
+			log.Printf("[%s] Removed from memory - not logged in (needs re-pairing)", phone)
+		}
+	}
+	
+	if len(removed) > 0 {
+		log.Printf("[CLEANUP] Removed %d inactive accounts: %v", len(removed), removed)
+	}
+	
+	return removed
+}
+
+// LoadExistingSessions loads and connects sessions from the sessions directory
+// Only loads sessions that have valid logged-in state
+func (m *ClientManager) LoadExistingSessions(ctx context.Context) (int, int, error) {
+	sessionsDir := getSessionsDir()
+	
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			log.Printf("[STARTUP] Sessions directory does not exist: %s", sessionsDir)
+			return 0, 0, nil
+		}
+		return 0, 0, fmt.Errorf("failed to read sessions directory: %w", err)
+	}
+
+	loaded := 0
+	skipped := 0
+	
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".db") {
+			continue
+		}
+		
+		// Extract phone from filename (e.g., "1234567890.db" -> "1234567890")
+		phone := strings.TrimSuffix(entry.Name(), ".db")
+		if phone == "" {
+			continue
+		}
+		
+		// Try to load and validate the session
+		valid, err := m.loadAndValidateSession(ctx, phone)
+		if err != nil {
+			log.Printf("[STARTUP] Error loading session for %s: %v", phone, err)
+			skipped++
+			continue
+		}
+		
+		if valid {
+			loaded++
+			log.Printf("[STARTUP] Loaded valid session: %s", phone)
+		} else {
+			skipped++
+			log.Printf("[STARTUP] Skipped invalid/not-logged-in session: %s", phone)
+		}
+	}
+	
+	log.Printf("[STARTUP] Session loading complete: %d loaded, %d skipped", loaded, skipped)
+	return loaded, skipped, nil
+}
+
+// loadAndValidateSession attempts to load a session and verify it's logged in
+func (m *ClientManager) loadAndValidateSession(ctx context.Context, phone string) (bool, error) {
+	dbPath := filepath.Join(getSessionsDir(), fmt.Sprintf("%s.db", phone))
+	dbURI := fmt.Sprintf("file:%s?_foreign_keys=on", dbPath)
+
+	// Use quieter logging for startup
+	dbLog := waLog.Stdout("DB-"+phone, "WARN", true)
+	container, err := sqlstore.New(ctx, "sqlite3", dbURI, dbLog)
+	if err != nil {
+		return false, fmt.Errorf("failed to open session store: %w", err)
+	}
+
+	// Get device
+	device, err := container.GetFirstDevice(ctx)
+	if err != nil {
+		container.Close()
+		return false, fmt.Errorf("failed to get device: %w", err)
+	}
+
+	if device == nil {
+		container.Close()
+		return false, nil // No device stored
+	}
+
+	// Check if device has a valid ID (was logged in before)
+	if device.ID == nil {
+		container.Close()
+		return false, nil // Never completed login
+	}
+
+	// Configure device properties
+	osName := fmt.Sprintf("Windows %s", m.Fingerprint.ComputerName)
+	platform := waCompanionReg.DeviceProps_PlatformType(1) // Chrome
+	store.DeviceProps.PlatformType = &platform
+	store.DeviceProps.Os = &osName
+
+	// Create client with quieter logging and proxy support
+	clientLog := waLog.Stdout("Client-"+phone, "WARN", true)
+	client, err := m.createClientWithProxy(device, clientLog)
+	if err != nil {
+		container.Close()
+		return false, fmt.Errorf("failed to create client with proxy: %w", err)
+	}
+
+	// Create account entry
+	acc := &AccountClient{
+		Phone:              phone,
+		Client:             client,
+		Container:          container,
+		Connected:          false,
+		LoggedIn:           false,
+		lastConnectedState: false,
+		lastLoggedInState:  false,
+	}
+
+	// Load existing metadata
+	loadedMeta := m.loadAccountMeta(phone)
+	m.applyAccountMeta(acc, loadedMeta)
+
+	// Set up event handler
+	client.AddEventHandler(func(evt interface{}) {
+		m.handleEvent(phone, evt)
+	})
+
+	// Try to connect
+	err = client.Connect()
+	if err != nil {
+		container.Close()
+		return false, fmt.Errorf("failed to connect: %w", err)
+	}
+
+	// Wait for connection to establish
+	time.Sleep(3 * time.Second)
+
+	// Check if actually logged in
+	if !client.IsLoggedIn() {
+		client.Disconnect()
+		container.Close()
+		return false, nil // Session exists but not valid anymore
+	}
+
+	// Session is valid - add to accounts
+	m.mu.Lock()
+	acc.Connected = true
+	acc.LoggedIn = true
+	acc.lastConnectedState = true
+	acc.lastLoggedInState = true
+	acc.lastStateChange = time.Now()
+	m.accounts[phone] = acc
+	m.mu.Unlock()
+
+	// Log warmup status
+	if !acc.WarmupComplete {
+		accountAge := time.Since(acc.CreatedAt)
+		remainingWarmup := (3 * 24 * time.Hour) - accountAge
+		if remainingWarmup > 0 {
+			log.Printf("[%s] Account in warmup period - %v remaining", phone, remainingWarmup.Round(time.Hour))
+		}
+	}
+
+	return true, nil
+}
+
 // Helper functions
 
 func sanitizePhone(phone string) string {
@@ -728,4 +1010,129 @@ func parseJID(phone string) (types.JID, error) {
 	}
 
 	return types.NewJID(phone, types.DefaultUserServer), nil
+}
+
+// AccountMeta stores persistent metadata about an account
+type AccountMeta struct {
+	CreatedAt      string `json:"created_at"`
+	LastWarmupSent string `json:"last_warmup_sent,omitempty"`
+	WarmupComplete bool   `json:"warmup_complete"`
+}
+
+// saveAccountMeta saves account metadata to a JSON file
+func (m *ClientManager) saveAccountMeta(phone string, acc *AccountClient) error {
+	metaFile := filepath.Join(getSessionsDir(), fmt.Sprintf("%s.meta.json", sanitizePhone(phone)))
+
+	meta := AccountMeta{
+		CreatedAt:      acc.CreatedAt.Format(time.RFC3339),
+		WarmupComplete: acc.WarmupComplete,
+	}
+	if !acc.LastWarmupSent.IsZero() {
+		meta.LastWarmupSent = acc.LastWarmupSent.Format(time.RFC3339)
+	}
+
+	jsonData, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal meta: %w", err)
+	}
+
+	if err := os.WriteFile(metaFile, jsonData, 0644); err != nil {
+		return fmt.Errorf("failed to write meta file: %w", err)
+	}
+
+	return nil
+}
+
+// loadAccountMeta loads account metadata from a JSON file
+func (m *ClientManager) loadAccountMeta(phone string) *AccountMeta {
+	metaFile := filepath.Join(getSessionsDir(), fmt.Sprintf("%s.meta.json", sanitizePhone(phone)))
+
+	data, err := os.ReadFile(metaFile)
+	if err != nil {
+		// No meta file exists - this is a new account
+		return nil
+	}
+
+	var meta AccountMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		log.Printf("[%s] Failed to parse meta file: %v", phone, err)
+		return nil
+	}
+
+	return &meta
+}
+
+// applyAccountMeta applies loaded metadata to an account
+func (m *ClientManager) applyAccountMeta(acc *AccountClient, meta *AccountMeta) {
+	if meta == nil {
+		// New account - set CreatedAt to now
+		acc.CreatedAt = time.Now()
+		acc.WarmupComplete = false
+		return
+	}
+
+	// Parse CreatedAt
+	if createdAt, err := time.Parse(time.RFC3339, meta.CreatedAt); err == nil {
+		acc.CreatedAt = createdAt
+	} else {
+		acc.CreatedAt = time.Now()
+	}
+
+	// Parse LastWarmupSent
+	if meta.LastWarmupSent != "" {
+		if lastWarmup, err := time.Parse(time.RFC3339, meta.LastWarmupSent); err == nil {
+			acc.LastWarmupSent = lastWarmup
+		}
+	}
+
+	acc.WarmupComplete = meta.WarmupComplete
+}
+
+// UpdateWarmupSent updates the last warmup sent time and saves metadata
+func (m *ClientManager) UpdateWarmupSent(phone string) {
+	m.mu.Lock()
+	acc, exists := m.accounts[phone]
+	if !exists {
+		m.mu.Unlock()
+		return
+	}
+	acc.LastWarmupSent = time.Now()
+	m.mu.Unlock()
+
+	// Save to file
+	if err := m.saveAccountMeta(phone, acc); err != nil {
+		log.Printf("[%s] Failed to save warmup meta: %v", phone, err)
+	}
+}
+
+// MarkWarmupComplete marks an account's warmup as complete
+func (m *ClientManager) MarkWarmupComplete(phone string) {
+	m.mu.Lock()
+	acc, exists := m.accounts[phone]
+	if !exists {
+		m.mu.Unlock()
+		return
+	}
+	acc.WarmupComplete = true
+	m.mu.Unlock()
+
+	// Save to file
+	if err := m.saveAccountMeta(phone, acc); err != nil {
+		log.Printf("[%s] Failed to save warmup complete meta: %v", phone, err)
+	}
+	log.Printf("[%s] Warmup complete! Account is now fully warmed up.", phone)
+}
+
+// GetActiveAccounts returns all logged-in and connected accounts
+func (m *ClientManager) GetActiveAccounts() []*AccountClient {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var active []*AccountClient
+	for _, acc := range m.accounts {
+		if acc.LoggedIn && acc.Connected && acc.Client != nil {
+			active = append(active, acc)
+		}
+	}
+	return active
 }

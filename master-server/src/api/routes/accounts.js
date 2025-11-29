@@ -1,138 +1,90 @@
-/**
- * Accounts API Routes
- * 
- * Endpoints:
- * - GET /pool - Get account pool status
- * - GET /free - Get free accounts
- * - GET /busy - Get busy accounts
- * - POST /refresh - Refresh accounts from workers
- * - GET /:phone/status - Get specific account status
- */
+import { Router } from 'express';
+import { query } from '../../config/database.js';
 
-const express = require('express');
-const accountPool = require('../../services/AccountPool');
-const logger = require('../../utils/logger');
+const router = Router();
 
-const router = express.Router();
-
-/**
- * GET /pool - Get complete account pool status
- */
-router.get('/pool', async (req, res) => {
+// GET /api/accounts
+router.get('/', async (req, res, next) => {
     try {
-        const status = await accountPool.getPoolStatus();
-        return res.json({
-            success: true,
-            ...status,
-        });
+        const result = await query('SELECT * FROM accounts ORDER BY created_at DESC LIMIT 200');
+        res.json(result.rows);
     } catch (err) {
-        logger.error({ msg: 'pool_status_error', error: err.message });
-        return res.status(500).json({ error: err.message });
+        next(err);
     }
 });
 
-/**
- * GET /free - Get free accounts
- */
-router.get('/free', async (req, res) => {
+// POST /api/accounts
+router.post('/', async (req, res, next) => {
     try {
-        const { country } = req.query;
-        const freeAccounts = await accountPool.getFreeAccounts(country || null);
-        
-        return res.json({
-            success: true,
-            count: freeAccounts.length,
-            country: country || 'all',
-            accounts: freeAccounts,
-        });
+        const {
+            phone_number: phoneNumber,
+            country,
+            proxy_ip: proxyIp,
+            proxy_port: proxyPort,
+            proxy_username: proxyUsername,
+            proxy_password: proxyPassword,
+            proxy_provider: proxyProvider
+        } = req.body;
+
+        const result = await query(
+            `INSERT INTO accounts (phone_number, country, proxy_ip, proxy_port, proxy_username, proxy_password, proxy_provider)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING *`,
+            [phoneNumber, country, proxyIp, proxyPort, proxyUsername, proxyPassword, proxyProvider]
+        );
+
+        res.status(201).json(result.rows[0]);
     } catch (err) {
-        logger.error({ msg: 'free_accounts_error', error: err.message });
-        return res.status(500).json({ error: err.message });
+        next(err);
     }
 });
 
-/**
- * GET /busy - Get busy accounts
- */
-router.get('/busy', async (req, res) => {
+// GET /api/accounts/:phone
+router.get('/:phone', async (req, res, next) => {
     try {
-        const busyAccounts = await accountPool.getBusyAccounts();
-        
-        return res.json({
-            success: true,
-            count: busyAccounts.length,
-            accounts: busyAccounts,
-        });
+        const result = await query('SELECT * FROM accounts WHERE phone_number = $1', [req.params.phone]);
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Account not found' });
+        }
+        res.json(result.rows[0]);
     } catch (err) {
-        logger.error({ msg: 'busy_accounts_error', error: err.message });
-        return res.status(500).json({ error: err.message });
+        next(err);
     }
 });
 
-/**
- * POST /refresh - Refresh accounts from all workers
- */
-router.post('/refresh', async (req, res) => {
+// PUT /api/accounts/:phone
+router.put('/:phone', async (req, res, next) => {
     try {
-        const accounts = await accountPool.refreshAccountsFromWorkers();
-        
-        return res.json({
-            success: true,
-            message: 'Accounts refreshed',
-            count: accounts.length,
-            accounts,
-        });
+        const { status, trust_score: trustScore } = req.body;
+        const result = await query(
+            `UPDATE accounts SET status = COALESCE($1, status),
+                           trust_score = COALESCE($2, trust_score),
+                           updated_at = CURRENT_TIMESTAMP
+       WHERE phone_number = $3
+       RETURNING *`,
+            [status || null, trustScore || null, req.params.phone]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Account not found' });
+        }
+
+        res.json(result.rows[0]);
     } catch (err) {
-        logger.error({ msg: 'refresh_error', error: err.message });
-        return res.status(500).json({ error: err.message });
+        next(err);
     }
 });
 
-/**
- * GET /:phone/status - Get specific account status
- */
-router.get('/:phone/status', async (req, res) => {
+// DELETE /api/accounts/:phone
+router.delete('/:phone', async (req, res, next) => {
     try {
-        const { phone } = req.params;
-        const decodedPhone = decodeURIComponent(phone);
-        
-        const canSend = await accountPool.canSend(decodedPhone);
-        const isBusy = await accountPool.isBusy(decodedPhone);
-        const dailyStats = await accountPool.getDailyStats(decodedPhone);
-        
-        return res.json({
-            success: true,
-            phone: decodedPhone,
-            status: isBusy ? 'busy' : (canSend.allowed ? 'free' : 'limit_reached'),
-            canSend: canSend.allowed,
-            remaining: canSend.remaining,
-            sentToday: dailyStats.sentToday,
-            lastSentAt: dailyStats.lastSentAt,
-        });
+        await query('DELETE FROM accounts WHERE phone_number = $1', [req.params.phone]);
+        res.status(204).send();
     } catch (err) {
-        logger.error({ msg: 'account_status_error', error: err.message });
-        return res.status(500).json({ error: err.message });
+        next(err);
     }
 });
 
-/**
- * GET /by-country/:country - Get accounts for a specific country
- */
-router.get('/by-country/:country', async (req, res) => {
-    try {
-        const { country } = req.params;
-        const accounts = await accountPool.getAccountsByCountry(country.toUpperCase());
-        
-        return res.json({
-            success: true,
-            country: country.toUpperCase(),
-            count: accounts.length,
-            accounts,
-        });
-    } catch (err) {
-        logger.error({ msg: 'accounts_by_country_error', error: err.message });
-        return res.status(500).json({ error: err.message });
-    }
-});
+export default router;
 
-module.exports = router;
+
