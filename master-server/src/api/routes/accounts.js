@@ -97,13 +97,13 @@ router.delete('/:phone', async (req, res, next) => {
 router.post('/warm-all', async (req, res, next) => {
     try {
         const results = [];
-        
+
         for (const worker of WORKERS) {
             try {
                 // Get warmup status from each worker
                 const response = await axios.get(`${worker.url}/warmup/status`, { timeout: 5000 });
                 const accounts = response.data?.accounts || [];
-                
+
                 // Count accounts that need warmup
                 const needsWarmup = accounts.filter(a => !a.warmup_complete).length;
                 results.push({
@@ -124,7 +124,7 @@ router.post('/warm-all', async (req, res, next) => {
         }
 
         const totalNeedsWarmup = results.reduce((sum, r) => sum + (r.needsWarmup || 0), 0);
-        
+
         res.json({
             success: true,
             message: `Warmup active for ${totalNeedsWarmup} accounts`,
@@ -139,7 +139,7 @@ router.post('/warm-all', async (req, res, next) => {
 router.get('/warmup-status', async (req, res, next) => {
     try {
         const results = [];
-        
+
         for (const worker of WORKERS) {
             try {
                 const response = await axios.get(`${worker.url}/warmup/status`, { timeout: 5000 });
@@ -248,7 +248,7 @@ router.get('/:phone/warmup', async (req, res, next) => {
         }
 
         const account = result.rows[0];
-        
+
         // Calculate days since warmup started
         const daysSinceStart = Math.floor(
             (Date.now() - new Date(account.warmup_started_at).getTime()) / (1000 * 60 * 60 * 24)
@@ -394,12 +394,12 @@ router.post('/:phone/health/message', async (req, res, next) => {
         const health = await query('SELECT * FROM account_health WHERE phone_number = $1', [phone]);
         if (health.rows.length > 0) {
             const h = health.rows[0];
-            
+
             // Calculate component scores
-            const activityScore = h.messages_sent > 0 
-                ? (h.messages_delivered / h.messages_sent) * 100 
+            const activityScore = h.messages_sent > 0
+                ? (h.messages_delivered / h.messages_sent) * 100
                 : 50;
-            
+
             const trustScore = h.messages_sent > 0
                 ? Math.max(0, h.delivery_rate - (h.error_count / h.messages_sent) * 100)
                 : 60;
@@ -439,7 +439,7 @@ router.post('/:phone/health/suspicious', async (req, res, next) => {
         const phone = req.params.phone;
         const { reason, suspend_hours } = req.body;
 
-        const suspendUntil = suspend_hours 
+        const suspendUntil = suspend_hours
             ? new Date(Date.now() + suspend_hours * 60 * 60 * 1000)
             : null;
 

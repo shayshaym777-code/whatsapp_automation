@@ -5,7 +5,8 @@ import {
     fetchAllAccounts,
     getMasterHealth,
     getAllWarmupStatus,
-    warmAllAccounts
+    warmAllAccounts,
+    getHealthSummary
 } from '../api/workers'
 
 function Dashboard() {
@@ -17,6 +18,7 @@ function Dashboard() {
         workers: []
     })
     const [masterHealth, setMasterHealth] = useState(null)
+    const [healthSummary, setHealthSummary] = useState(null)
     const [loading, setLoading] = useState(true)
     const [warmingAll, setWarmingAll] = useState(false)
     const [warmupStatus, setWarmupStatus] = useState([])
@@ -30,11 +32,12 @@ function Dashboard() {
     const fetchStats = async () => {
         try {
             // Fetch all data in parallel
-            const [workersHealth, accounts, master, warmup] = await Promise.all([
+            const [workersHealth, accounts, master, warmup, health] = await Promise.all([
                 fetchAllWorkersHealth(),
                 fetchAllAccounts(),
                 getMasterHealth(),
-                getAllWarmupStatus()
+                getAllWarmupStatus(),
+                getHealthSummary()
             ])
 
             const activeAccounts = accounts.filter(a => a.connected && a.logged_in).length
@@ -45,9 +48,10 @@ function Dashboard() {
                 totalAccounts: accounts.length,
                 activeAccounts,
                 warmupAccounts,
-                messagesSentToday: 0, // TODO: Get from master
+                messagesSentToday: 0,
                 workers: workersHealth
             })
+            setHealthSummary(health)
             setMasterHealth(master)
             setWarmupStatus(warmup)
             setLoading(false)
@@ -149,6 +153,41 @@ function Dashboard() {
                     ))}
                 </div>
             </div>
+
+            {/* Account Health Summary */}
+            {healthSummary && (
+                <div className="card">
+                    <h3 className="text-xl font-semibold text-white mb-6">🛡️ Account Health</h3>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-4 text-center">
+                            <div className="text-2xl font-bold text-green-400">{healthSummary.healthy_accounts || 0}</div>
+                            <div className="text-sm text-gray-400">Healthy (80+)</div>
+                        </div>
+                        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4 text-center">
+                            <div className="text-2xl font-bold text-yellow-400">{healthSummary.warning_accounts || 0}</div>
+                            <div className="text-sm text-gray-400">Warning (60-79)</div>
+                        </div>
+                        <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 text-center">
+                            <div className="text-2xl font-bold text-red-400">{healthSummary.critical_accounts || 0}</div>
+                            <div className="text-sm text-gray-400">Critical (&lt;60)</div>
+                        </div>
+                        <div className="bg-purple-500/10 border border-purple-500/30 rounded-lg p-4 text-center">
+                            <div className="text-2xl font-bold text-purple-400">
+                                {Math.round(healthSummary.avg_safety_score || 0)}%
+                            </div>
+                            <div className="text-sm text-gray-400">Avg Score</div>
+                        </div>
+                    </div>
+                    {healthSummary.suspicious_accounts > 0 && (
+                        <div className="mt-4 p-3 bg-red-500/20 border border-red-500/30 rounded-lg flex items-center gap-2">
+                            <span className="text-red-400">⚠️</span>
+                            <span className="text-red-400 text-sm">
+                                {healthSummary.suspicious_accounts} suspicious account(s) detected
+                            </span>
+                        </div>
+                    )}
+                </div>
+            )}
 
             {/* Warmup Status */}
             {warmupStatus.some(w => w.accounts?.length > 0) && (

@@ -254,4 +254,3 @@ func (m *ClientManager) GetWarmupStatus() []map[string]interface{} {
 
 	return statuses
 }
-

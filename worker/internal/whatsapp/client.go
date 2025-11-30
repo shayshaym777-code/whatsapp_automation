@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -647,6 +648,7 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 }
 
 // SendMessage sends a text message from one account to a recipient
+// Includes anti-ban measures: typing simulation, message variation, health reporting
 func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, message string) (*SendResult, error) {
 	m.mu.RLock()
 	acc, exists := m.accounts[fromPhone]
@@ -666,16 +668,40 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 		return nil, fmt.Errorf("invalid recipient phone: %w", err)
 	}
 
+	// === ANTI-BAN: Apply message variation ===
+	variedMessage := applyMessageVariation(message)
+
+	// === ANTI-BAN: Simulate typing (human-like delay) ===
+	typingDelay := calculateTypingDelay(variedMessage)
+	
+	// Send "composing" presence to show typing indicator
+	if err := acc.Client.SendPresence(types.PresenceAvailable); err != nil {
+		log.Printf("[%s] Failed to send presence: %v", fromPhone, err)
+	}
+	
+	// Wait for typing simulation
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(typingDelay):
+	}
+
 	// Create message
 	msg := &waE2E.Message{
-		Conversation: proto.String(message),
+		Conversation: proto.String(variedMessage),
 	}
 
 	// Send message
 	resp, err := acc.Client.SendMessage(ctx, recipientJID, msg)
+	
+	// === Report to Master for health tracking ===
+	go m.reportMessageToMaster(fromPhone, err == nil, err)
+	
 	if err != nil {
 		return nil, fmt.Errorf("failed to send message: %w", err)
 	}
+
+	log.Printf("[%s] Message sent to %s (typing delay: %v)", fromPhone, toPhone, typingDelay)
 
 	return &SendResult{
 		MessageID: resp.ID,
@@ -683,6 +709,93 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 		FromPhone: fromPhone,
 		ToPhone:   toPhone,
 	}, nil
+}
+
+// applyMessageVariation adds invisible characters for uniqueness
+func applyMessageVariation(message string) string {
+	// Zero-width characters for invisible variation
+	zeroWidth := []string{
+		"\u200B", // Zero-width space
+		"\u200C", // Zero-width non-joiner
+		"\u200D", // Zero-width joiner
+	}
+
+	// Add 1-2 invisible characters at random positions
+	result := message
+	numChars := 1 + rand.Intn(2)
+
+	for i := 0; i < numChars; i++ {
+		char := zeroWidth[rand.Intn(len(zeroWidth))]
+		pos := rand.Intn(len(result) + 1)
+		result = result[:pos] + char + result[pos:]
+	}
+
+	return result
+}
+
+// calculateTypingDelay simulates human typing speed
+func calculateTypingDelay(message string) time.Duration {
+	// Base: 50-150ms per character
+	charCount := len(message)
+	perCharMs := 50 + rand.Intn(100)
+	typingTime := charCount * perCharMs
+
+	// Add word pauses (100-200ms between words)
+	wordCount := len(strings.Fields(message))
+	wordPauseMs := wordCount * (100 + rand.Intn(100))
+
+	// Add "thinking" pause (1-3 seconds)
+	thinkingMs := 1000 + rand.Intn(2000)
+
+	totalMs := typingTime + wordPauseMs + thinkingMs
+
+	// Cap at 15 seconds for long messages
+	if totalMs > 15000 {
+		totalMs = 15000
+	}
+
+	// Minimum 2 seconds
+	if totalMs < 2000 {
+		totalMs = 2000
+	}
+
+	return time.Duration(totalMs) * time.Millisecond
+}
+
+// reportMessageToMaster reports message success/failure to Master for health tracking
+func (m *ClientManager) reportMessageToMaster(phone string, success bool, sendErr error) {
+	masterURL := os.Getenv("MASTER_URL")
+	if masterURL == "" {
+		masterURL = "http://master:5000"
+	}
+
+	url := fmt.Sprintf("%s/api/accounts/%s/health/message", masterURL, phone)
+
+	payload := map[string]interface{}{
+		"success": success,
+	}
+	if sendErr != nil {
+		payload["error"] = sendErr.Error()
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
 }
 
 // SendResult represents the result of sending a message
