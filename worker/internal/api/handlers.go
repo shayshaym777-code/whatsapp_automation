@@ -21,12 +21,16 @@ type Server struct {
 	ProxyCountry string
 	Fingerprint  fingerprint.DeviceFingerprint
 	ProxyConfig  *config.ProxyConfig
+	ProxyPool    *config.ProxyPool
 	client       *whatsapp.ClientManager
 	monitor      *whatsapp.ConnectionMonitor
 }
 
 // NewServer creates a new API server instance
 func NewServer(workerID, deviceSeed, proxyCountry string, fp fingerprint.DeviceFingerprint, proxyConfig *config.ProxyConfig) (*Server, error) {
+	// Load proxy pool for rotation
+	proxyPool := config.LoadProxyPool()
+	
 	client := whatsapp.NewClientManager(fp, proxyCountry, workerID, proxyConfig)
 	monitor := whatsapp.NewConnectionMonitor(client)
 
@@ -36,6 +40,7 @@ func NewServer(workerID, deviceSeed, proxyCountry string, fp fingerprint.DeviceF
 		ProxyCountry: proxyCountry,
 		Fingerprint:  fp,
 		ProxyConfig:  proxyConfig,
+		ProxyPool:    proxyPool,
 		client:       client,
 		monitor:      monitor,
 	}, nil
@@ -100,6 +105,9 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	
 	// Warmup endpoints
 	r.HandleFunc("/warmup/status", s.handleWarmupStatus).Methods(http.MethodGet)
+	
+	// Proxy endpoints
+	r.HandleFunc("/proxy/stats", s.handleProxyStats).Methods(http.MethodGet)
 }
 
 // writeJSON writes a JSON response
@@ -443,5 +451,38 @@ func (s *Server) handleWarmupStatus(w http.ResponseWriter, r *http.Request) {
 		"success":  true,
 		"count":    len(statuses),
 		"accounts": statuses,
+	})
+}
+
+// GET /proxy/stats - Get proxy pool statistics
+func (s *Server) handleProxyStats(w http.ResponseWriter, r *http.Request) {
+	var stats map[string]interface{}
+	
+	if s.ProxyPool != nil && s.ProxyPool.IsEnabled() {
+		stats = s.ProxyPool.GetStats()
+		stats["rotation_enabled"] = true
+	} else if s.ProxyConfig != nil && s.ProxyConfig.Enabled {
+		stats = map[string]interface{}{
+			"rotation_enabled": false,
+			"single_proxy": map[string]interface{}{
+				"host":    s.ProxyConfig.Host,
+				"port":    s.ProxyConfig.Port,
+				"type":    s.ProxyConfig.Type,
+				"enabled": s.ProxyConfig.Enabled,
+			},
+		}
+	} else {
+		stats = map[string]interface{}{
+			"rotation_enabled": false,
+			"proxy_enabled":    false,
+		}
+	}
+	
+	stats["worker_id"] = s.WorkerID
+	stats["proxy_country"] = s.ProxyCountry
+	
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"proxy":   stats,
 	})
 }

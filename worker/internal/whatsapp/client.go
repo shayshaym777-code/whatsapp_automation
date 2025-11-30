@@ -641,7 +641,7 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 		m.mu.Unlock()
 		// Don't log every message - too spammy
 		// log.Printf("[%s] Received message from %s", phone, v.Info.Sender.String())
-		
+
 	default:
 		m.mu.Unlock()
 	}
@@ -673,12 +673,12 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 
 	// === ANTI-BAN: Simulate typing (human-like delay) ===
 	typingDelay := calculateTypingDelay(variedMessage)
-	
+
 	// Send "composing" presence to show typing indicator
 	if err := acc.Client.SendPresence(types.PresenceAvailable); err != nil {
 		log.Printf("[%s] Failed to send presence: %v", fromPhone, err)
 	}
-	
+
 	// Wait for typing simulation
 	select {
 	case <-ctx.Done():
@@ -693,10 +693,10 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 
 	// Send message
 	resp, err := acc.Client.SendMessage(ctx, recipientJID, msg)
-	
+
 	// === Report to Master for health tracking ===
 	go m.reportMessageToMaster(fromPhone, err == nil, err)
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to send message: %w", err)
 	}
@@ -947,11 +947,11 @@ func (m *ClientManager) CleanupInactiveAccounts() []string {
 			log.Printf("[%s] Removed from memory - not logged in (needs re-pairing)", phone)
 		}
 	}
-	
+
 	if len(removed) > 0 {
 		log.Printf("[CLEANUP] Removed %d inactive accounts: %v", len(removed), removed)
 	}
-	
+
 	return removed
 }
 
@@ -959,7 +959,7 @@ func (m *ClientManager) CleanupInactiveAccounts() []string {
 // Only loads sessions that have valid logged-in state
 func (m *ClientManager) LoadExistingSessions(ctx context.Context) (int, int, error) {
 	sessionsDir := getSessionsDir()
-	
+
 	entries, err := os.ReadDir(sessionsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -971,18 +971,18 @@ func (m *ClientManager) LoadExistingSessions(ctx context.Context) (int, int, err
 
 	loaded := 0
 	skipped := 0
-	
+
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".db") {
 			continue
 		}
-		
+
 		// Extract phone from filename (e.g., "1234567890.db" -> "1234567890")
 		phone := strings.TrimSuffix(entry.Name(), ".db")
 		if phone == "" {
 			continue
 		}
-		
+
 		// Try to load and validate the session
 		valid, err := m.loadAndValidateSession(ctx, phone)
 		if err != nil {
@@ -990,7 +990,7 @@ func (m *ClientManager) LoadExistingSessions(ctx context.Context) (int, int, err
 			skipped++
 			continue
 		}
-		
+
 		if valid {
 			loaded++
 			log.Printf("[STARTUP] Loaded valid session: %s", phone)
@@ -999,7 +999,7 @@ func (m *ClientManager) LoadExistingSessions(ctx context.Context) (int, int, err
 			log.Printf("[STARTUP] Skipped invalid/not-logged-in session: %s", phone)
 		}
 	}
-	
+
 	log.Printf("[STARTUP] Session loading complete: %d loaded, %d skipped", loaded, skipped)
 	return loaded, skipped, nil
 }

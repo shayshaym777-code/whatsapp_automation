@@ -150,12 +150,14 @@ services:
       PROXY_COUNTRY: ${WORKER_1_COUNTRY:-US}
       MASTER_URL: http://master:5000
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      # Proxy configuration - US proxy
+      # Proxy configuration - US proxy (single or list)
       PROXY_HOST: ${PROXY_HOST:-geo.iproyal.com}
       PROXY_PORT: ${PROXY_PORT:-12321}
       PROXY_USER: ${PROXY_USER:-8ou9yomVguVTDM5q}
       PROXY_PASS: ${WORKER_1_PROXY_PASS:-k5CuWpGcfNEZZX23_country-us_streaming-1}
       PROXY_TYPE: ${PROXY_TYPE:-socks5}
+      # Optional: Multiple proxies for rotation (format: host1:port1:user1:pass1,host2:port2:user2:pass2)
+      PROXY_LIST: ${WORKER_1_PROXY_LIST:-}
     volumes:
       - worker1_sessions:/data/sessions
       - worker1_qrcodes:/data/qrcodes
@@ -198,6 +200,8 @@ services:
       PROXY_USER: ${PROXY_USER:-8ou9yomVguVTDM5q}
       PROXY_PASS: ${WORKER_2_PROXY_PASS:-k5CuWpGcfNEZZX23_country-il_streaming-1}
       PROXY_TYPE: ${PROXY_TYPE:-socks5}
+      # Optional: Multiple proxies for rotation
+      PROXY_LIST: ${WORKER_2_PROXY_LIST:-}
     volumes:
       - worker2_sessions:/data/sessions
       - worker2_qrcodes:/data/qrcodes
@@ -240,6 +244,8 @@ services:
       PROXY_USER: ${PROXY_USER:-8ou9yomVguVTDM5q}
       PROXY_PASS: ${WORKER_3_PROXY_PASS:-k5CuWpGcfNEZZX23_country-us_streaming-1}
       PROXY_TYPE: ${PROXY_TYPE:-socks5}
+      # Optional: Multiple proxies for rotation
+      PROXY_LIST: ${WORKER_3_PROXY_LIST:-}
     volumes:
       - worker3_sessions:/data/sessions
       - worker3_qrcodes:/data/qrcodes
