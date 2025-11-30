@@ -105,6 +105,7 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 
 	// Warmup endpoints
 	r.HandleFunc("/warmup/status", s.handleWarmupStatus).Methods(http.MethodGet)
+	r.HandleFunc("/accounts/{phone}/skip-warmup", s.handleSkipWarmup).Methods(http.MethodPost)
 
 	// Proxy endpoints
 	r.HandleFunc("/proxy/stats", s.handleProxyStats).Methods(http.MethodGet)
@@ -451,6 +452,31 @@ func (s *Server) handleWarmupStatus(w http.ResponseWriter, r *http.Request) {
 		"success":  true,
 		"count":    len(statuses),
 		"accounts": statuses,
+	})
+}
+
+// POST /accounts/{phone}/skip-warmup - Skip warmup for an account
+func (s *Server) handleSkipWarmup(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	phone := vars["phone"]
+
+	if phone == "" {
+		writeError(w, http.StatusBadRequest, "phone is required")
+		return
+	}
+
+	err := s.client.SkipWarmup(phone)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to skip warmup: "+err.Error())
+		return
+	}
+
+	log.Printf("[WARMUP] Skipped warmup for account %s", phone)
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"phone":   phone,
+		"message": "Warmup skipped - account can now send at full capacity",
 	})
 }
 

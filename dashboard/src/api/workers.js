@@ -447,6 +447,34 @@ export async function cleanupAccounts(worker) {
     return res.json()
 }
 
+/**
+ * Skip warmup for an account
+ */
+export async function skipAccountWarmup(phone, workerPort) {
+    const worker = WORKERS.find(w => w.port === workerPort)
+    if (!worker) throw new Error('Worker not found')
+
+    const url = getWorkerUrl(worker)
+    const res = await fetch(`${url}/accounts/${encodeURIComponent(phone)}/skip-warmup`, {
+        method: 'POST',
+        headers: getHeaders()
+    })
+
+    if (!res.ok) {
+        const text = await res.text()
+        let error = 'Failed to skip warmup'
+        try {
+            const json = JSON.parse(text)
+            error = json.error || json.message || error
+        } catch (e) {
+            error = text || error
+        }
+        throw new Error(error)
+    }
+
+    return res.json()
+}
+
 // ============================================
 // Master Server API
 // ============================================

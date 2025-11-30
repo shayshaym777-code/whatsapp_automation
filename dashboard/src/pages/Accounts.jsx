@@ -4,7 +4,8 @@ import {
     WORKERS,
     fetchAllAccounts,
     disconnectAccount,
-    cleanupAccounts
+    cleanupAccounts,
+    skipAccountWarmup
 } from '../api/workers'
 
 function Accounts() {
@@ -49,6 +50,18 @@ function Accounts() {
         } catch (err) {
             // Even if disconnect fails, refresh to update UI
             fetchAccounts()
+        }
+    }
+
+    const handleSkipWarmup = async (account) => {
+        if (!confirm(`Skip warmup for ${account.phone}? This will allow full message capacity immediately.`)) return
+
+        try {
+            await skipAccountWarmup(account.phone, account.workerPort)
+            alert(`Warmup skipped for ${account.phone}!`)
+            fetchAccounts()
+        } catch (err) {
+            alert('Failed to skip warmup: ' + err.message)
         }
     }
 
@@ -171,6 +184,7 @@ function Accounts() {
                             account={account}
                             onDisconnect={() => handleDisconnect(account)}
                             onDelete={() => handleDelete(account)}
+                            onSkipWarmup={() => handleSkipWarmup(account)}
                         />
                     ))}
                 </div>
@@ -186,7 +200,7 @@ function Accounts() {
     )
 }
 
-function AccountCard({ account, onDisconnect, onDelete }) {
+function AccountCard({ account, onDisconnect, onDelete, onSkipWarmup }) {
     const countryFlags = { US: '🇺🇸', IL: '🇮🇱', GB: '🇬🇧' }
     const isConnected = account.connected
     const isLoggedIn = account.logged_in
@@ -273,7 +287,7 @@ function AccountCard({ account, onDisconnect, onDelete }) {
                 </div>
             </div>
 
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap">
                 {isActive ? (
                     <>
                         <Link
@@ -281,8 +295,18 @@ function AccountCard({ account, onDisconnect, onDelete }) {
                             className="flex-1 py-2 px-3 bg-wa-green/20 text-wa-green rounded-lg text-sm font-medium
                              hover:bg-wa-green/30 transition-colors text-center"
                         >
-                            Send Message
+                            Send
                         </Link>
+                        {isWarmup && (
+                            <button
+                                onClick={onSkipWarmup}
+                                className="py-2 px-3 bg-orange-500/20 text-orange-400 rounded-lg text-sm font-medium
+                                 hover:bg-orange-500/30 transition-colors"
+                                title="Skip Warmup"
+                            >
+                                ⏭️
+                            </button>
+                        )}
                         <button
                             onClick={onDisconnect}
                             className="py-2 px-3 bg-red-500/20 text-red-400 rounded-lg text-sm font-medium

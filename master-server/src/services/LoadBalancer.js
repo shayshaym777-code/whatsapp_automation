@@ -4,17 +4,17 @@ const workers = [
     {
         id: 'worker-1',
         country: 'US',
-        url: process.env.WORKER_US_URL || 'http://worker-1:3000'
+        url: process.env.WORKER_US_URL || 'http://worker-1:3001'
     },
     {
         id: 'worker-2',
         country: 'IL',
-        url: process.env.WORKER_IL_URL || 'http://worker-2:3000'
+        url: process.env.WORKER_IL_URL || 'http://worker-2:3001'
     },
     {
         id: 'worker-3',
         country: 'GB',
-        url: process.env.WORKER_GB_URL || 'http://worker-3:3000'
+        url: process.env.WORKER_GB_URL || 'http://worker-3:3001'
     }
 ];
 

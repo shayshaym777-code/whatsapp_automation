@@ -1406,6 +1406,33 @@ func (m *ClientManager) MarkWarmupComplete(phone string) {
 	log.Printf("[%s] Warmup complete! Account is now fully warmed up.", phone)
 }
 
+// SkipWarmup skips the warmup period for an account (marks it as complete)
+func (m *ClientManager) SkipWarmup(phone string) error {
+	m.mu.Lock()
+	acc, exists := m.accounts[phone]
+	if !exists {
+		m.mu.Unlock()
+		return fmt.Errorf("account %s not found", phone)
+	}
+	
+	if acc.WarmupComplete {
+		m.mu.Unlock()
+		return nil // Already complete
+	}
+	
+	acc.WarmupComplete = true
+	m.mu.Unlock()
+
+	// Save to file
+	if err := m.saveAccountMeta(phone, acc); err != nil {
+		log.Printf("[%s] Failed to save skip warmup meta: %v", phone, err)
+		return err
+	}
+	
+	log.Printf("[%s] Warmup SKIPPED! Account can now send at full capacity.", phone)
+	return nil
+}
+
 // GetActiveAccounts returns all logged-in and connected accounts
 func (m *ClientManager) GetActiveAccounts() []*AccountClient {
 	m.mu.RLock()
