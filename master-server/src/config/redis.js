@@ -1,10 +1,10 @@
-import Redis from 'ioredis';
-import { logger } from '../utils/logger.js';
+const Redis = require('ioredis');
+const logger = require('../utils/logger');
 
 const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
 
-export const redis = new Redis(redisUrl);
-export const redisPubSub = new Redis(redisUrl);
+const redis = new Redis(redisUrl);
+const redisPubSub = new Redis(redisUrl);
 
 redis.on('error', (err) => {
     logger.error('Redis error', { error: err.message });
@@ -14,4 +14,4 @@ redis.on('connect', () => {
     logger.info('Redis connected');
 });
 
-
+module.exports = { redis, redisPubSub };

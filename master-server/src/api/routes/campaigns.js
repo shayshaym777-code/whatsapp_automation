@@ -1,5 +1,5 @@
-import { Router } from 'express';
-import { query } from '../../config/database.js';
+const { Router } = require('express');
+const { query } = require('../../config/database');
 
 const router = Router();
 
@@ -39,6 +39,4 @@ router.post('/', async (req, res, next) => {
     }
 });
 
-export default router;
-
-
+module.exports = router;
