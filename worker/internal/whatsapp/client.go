@@ -810,26 +810,26 @@ func isProxyError(err error) bool {
 func (m *ClientManager) handleProxyFailure(phone string, acc *AccountClient) {
 	acc.ProxyFailCount++
 	acc.LastProxyFailure = time.Now()
-	
+
 	log.Printf("[%s] Proxy failure #%d for proxy: %s", phone, acc.ProxyFailCount, truncateProxy(acc.AssignedProxy))
-	
+
 	// After 3 consecutive failures, try to reassign proxy
 	if acc.ProxyFailCount >= 3 && m.proxyPool != nil && m.proxyPool.Count() > 1 {
 		log.Printf("[%s] Too many proxy failures, attempting to reassign proxy...", phone)
-		
+
 		newProxy := m.proxyPool.ReassignProxy(phone)
 		if newProxy.Enabled && newProxy.GetURL() != acc.AssignedProxy {
 			oldProxy := acc.AssignedProxy
 			acc.AssignedProxy = newProxy.GetURL()
 			acc.ProxyFailCount = 0
-			
+
 			// Save the new assignment
 			if err := m.saveAccountMeta(phone, acc); err != nil {
 				log.Printf("[%s] Failed to save new proxy assignment: %v", phone, err)
 			}
-			
+
 			log.Printf("[%s] PROXY REASSIGNED: %s -> %s", phone, truncateProxy(oldProxy), truncateProxy(acc.AssignedProxy))
-			
+
 			// Note: The client will use the new proxy on next reconnect
 			// For immediate effect, we could disconnect and reconnect, but that's disruptive
 		}
@@ -1414,12 +1414,12 @@ func (m *ClientManager) SkipWarmup(phone string) error {
 		m.mu.Unlock()
 		return fmt.Errorf("account %s not found", phone)
 	}
-	
+
 	if acc.WarmupComplete {
 		m.mu.Unlock()
 		return nil // Already complete
 	}
-	
+
 	acc.WarmupComplete = true
 	m.mu.Unlock()
 
@@ -1428,7 +1428,7 @@ func (m *ClientManager) SkipWarmup(phone string) error {
 		log.Printf("[%s] Failed to save skip warmup meta: %v", phone, err)
 		return err
 	}
-	
+
 	log.Printf("[%s] Warmup SKIPPED! Account can now send at full capacity.", phone)
 	return nil
 }

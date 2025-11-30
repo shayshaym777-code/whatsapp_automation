@@ -102,52 +102,68 @@ function Dashboard() {
         }
     }
 
-    // Calculate sending rate
+    // Calculate sending rate based on actual delays and limits
     const calculateSendingRate = () => {
-        const warmupStages = getWarmupStages()
+        // Stage configuration with realistic delays
+        const stageConfig = {
+            'New Born': { maxDay: 5, delayMin: 30, delayMax: 60, msgsPerHour: 1 },
+            'Baby': { maxDay: 15, delayMin: 20, delayMax: 40, msgsPerHour: 3 },
+            'Toddler': { maxDay: 30, delayMin: 10, delayMax: 20, msgsPerHour: 6 },
+            'Teen': { maxDay: 50, delayMin: 5, delayMax: 10, msgsPerHour: 10 },
+            'Adult': { maxDay: 100, delayMin: 3, delayMax: 7, msgsPerHour: 20 },
+            'Veteran': { maxDay: 200, delayMin: 1, delayMax: 5, msgsPerHour: 40 },
+        }
+
         let totalMessagesPerDay = 0
+        let totalMsgsPerHour = 0
         let accountBreakdown = []
 
         stats.accounts.forEach(account => {
             if (!account.connected || !account.logged_in) return
 
-            let dailyLimit = 100 // Default for completed warmup
             let stage = 'Adult'
 
             if (!account.warmup_complete) {
-                // Estimate based on account age (simplified)
-                // In reality, this would come from the server
                 const ageHours = account.account_age_hours || 0
                 const ageDays = ageHours / 24
 
                 if (ageDays <= 3) {
-                    dailyLimit = 5
                     stage = 'New Born'
                 } else if (ageDays <= 7) {
-                    dailyLimit = 15
                     stage = 'Baby'
                 } else if (ageDays <= 14) {
-                    dailyLimit = 30
                     stage = 'Toddler'
                 } else if (ageDays <= 30) {
-                    dailyLimit = 50
                     stage = 'Teen'
+                }
+            } else {
+                // Check if veteran (60+ days)
+                const ageHours = account.account_age_hours || 0
+                const ageDays = ageHours / 24
+                if (ageDays >= 60) {
+                    stage = 'Veteran'
                 }
             }
 
-            totalMessagesPerDay += dailyLimit
-            accountBreakdown.push({ phone: account.phone, dailyLimit, stage })
+            const config = stageConfig[stage]
+            totalMessagesPerDay += config.maxDay
+            totalMsgsPerHour += config.msgsPerHour
+            accountBreakdown.push({ 
+                phone: account.phone, 
+                dailyLimit: config.maxDay, 
+                stage,
+                msgsPerHour: config.msgsPerHour,
+                delay: `${config.delayMin}-${config.delayMax}s`
+            })
         })
 
-        // Messages per minute (assuming 8 hours of active sending)
-        const activeHours = 8
-        const messagesPerHour = totalMessagesPerDay / activeHours
-        const messagesPerMinute = messagesPerHour / 60
+        // Calculate based on actual throughput capacity
+        const messagesPerMinute = totalMsgsPerHour / 60
 
         return {
             totalMessagesPerDay,
-            messagesPerHour: Math.round(messagesPerHour),
-            messagesPerMinute: messagesPerMinute.toFixed(1),
+            messagesPerHour: totalMsgsPerHour,
+            messagesPerMinute: messagesPerMinute.toFixed(2),
             accountBreakdown
         }
     }
@@ -212,18 +228,25 @@ function Dashboard() {
                 
                 {/* Breakdown by stage */}
                 <div className="mt-6 pt-4 border-t border-wa-border">
-                    <h4 className="text-sm font-medium text-gray-400 mb-3">Breakdown by Stage</h4>
-                    <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-                        {['New Born', 'Baby', 'Toddler', 'Teen', 'Adult'].map(stage => {
+                    <h4 className="text-sm font-medium text-gray-400 mb-3">Breakdown by Stage (with delays)</h4>
+                    <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
+                        {[
+                            { stage: 'New Born', emoji: '🐣', limit: 5, rate: 1, delay: '30-60s' },
+                            { stage: 'Baby', emoji: '👶', limit: 15, rate: 3, delay: '20-40s' },
+                            { stage: 'Toddler', emoji: '🧒', limit: 30, rate: 6, delay: '10-20s' },
+                            { stage: 'Teen', emoji: '👦', limit: 50, rate: 10, delay: '5-10s' },
+                            { stage: 'Adult', emoji: '🧑', limit: 100, rate: 20, delay: '3-7s' },
+                            { stage: 'Veteran', emoji: '🎖️', limit: 200, rate: 40, delay: '1-5s' },
+                        ].map(({ stage, emoji, limit, rate, delay }) => {
                             const count = sendingRate.accountBreakdown.filter(a => a.stage === stage).length
-                            const limit = stage === 'New Born' ? 5 : stage === 'Baby' ? 15 : stage === 'Toddler' ? 30 : stage === 'Teen' ? 50 : 100
-                            const emoji = stage === 'New Born' ? '🐣' : stage === 'Baby' ? '👶' : stage === 'Toddler' ? '🧒' : stage === 'Teen' ? '👦' : '🧑'
                             return (
-                                <div key={stage} className="bg-wa-bg rounded-lg p-3 text-center">
+                                <div key={stage} className={`bg-wa-bg rounded-lg p-3 text-center ${count > 0 ? 'ring-1 ring-wa-green/50' : ''}`}>
                                     <div className="text-lg">{emoji}</div>
                                     <div className="text-xl font-bold text-white">{count}</div>
                                     <div className="text-xs text-gray-500">{stage}</div>
-                                    <div className="text-xs text-gray-600">{limit} msg/day</div>
+                                    <div className="text-xs text-green-400">{limit}/day</div>
+                                    <div className="text-xs text-blue-400">{rate}/hr</div>
+                                    <div className="text-xs text-gray-600">{delay}</div>
                                 </div>
                             )
                         })}

@@ -211,7 +211,7 @@ function AccountCard({ account, onDisconnect, onDelete, onSkipWarmup }) {
     // Determine status label and color
     let statusLabel = 'Disconnected'
     let statusClass = 'badge-error'
-    
+
     if (isActive) {
         if (isWarmup) {
             statusLabel = '🔥 Warming Up'
@@ -226,22 +226,20 @@ function AccountCard({ account, onDisconnect, onDelete, onSkipWarmup }) {
     }
 
     return (
-        <div className={`card transition-all duration-300 ${
-            isActive 
-                ? isWarmup 
-                    ? 'border-orange-500/30' 
+        <div className={`card transition-all duration-300 ${isActive
+                ? isWarmup
+                    ? 'border-orange-500/30'
                     : 'border-green-500/30'
                 : 'border-red-500/30'
-        }`}>
+            }`}>
             <div className="flex items-start justify-between mb-4">
                 <div className="flex items-center gap-3">
-                    <div className={`w-12 h-12 rounded-full flex items-center justify-center text-xl ${
-                        isActive 
-                            ? isWarmup 
-                                ? 'bg-orange-500/20' 
+                    <div className={`w-12 h-12 rounded-full flex items-center justify-center text-xl ${isActive
+                            ? isWarmup
+                                ? 'bg-orange-500/20'
                                 : 'bg-green-500/20'
                             : 'bg-red-500/20'
-                    }`}>
+                        }`}>
                         {countryFlags[account.workerCountry] || '📱'}
                     </div>
                     <div>
