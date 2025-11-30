@@ -54,6 +54,7 @@ type ClientManager struct {
 
 	// Proxy configuration
 	proxyConfig *config.ProxyConfig
+	proxyPool   *config.ProxyPool // Pool for sticky proxy assignment
 }
 
 // AccountClient represents a connected WhatsApp account
@@ -75,6 +76,11 @@ type AccountClient struct {
 	CreatedAt      time.Time // When account was first connected
 	LastWarmupSent time.Time // Last warmup message time
 	WarmupComplete bool      // True after 3 days of warmup
+
+	// Proxy assignment - each account gets a dedicated proxy
+	AssignedProxy    string // Full proxy URL assigned to this account
+	ProxyFailCount   int    // Number of consecutive proxy failures
+	LastProxyFailure time.Time
 }
 
 // NewClientManager creates a new client manager for this worker
@@ -83,32 +89,50 @@ func NewClientManager(fp fingerprint.DeviceFingerprint, proxyCountry, workerID s
 	os.MkdirAll(QRCodeDir, 0755)
 	os.MkdirAll(getSessionsDir(), 0755)
 
+	// Load proxy pool for sticky assignment
+	proxyPool := config.LoadProxyPool()
+	log.Printf("[ClientManager] Initialized with %d proxies for sticky assignment", proxyPool.Count())
+
 	return &ClientManager{
 		Fingerprint:  fp,
 		ProxyCountry: proxyCountry,
 		WorkerID:     workerID,
 		accounts:     make(map[string]*AccountClient),
 		proxyConfig:  proxyConfig,
+		proxyPool:    proxyPool,
 	}
 }
 
+// GetProxyPool returns the proxy pool (for handlers to access stats)
+func (m *ClientManager) GetProxyPool() *config.ProxyPool {
+	return m.proxyPool
+}
+
 // createClientWithProxy creates a WhatsApp client with optional proxy support
-func (m *ClientManager) createClientWithProxy(device *store.Device, clientLog waLog.Logger) (*whatsmeow.Client, error) {
+func (m *ClientManager) createClientWithProxy(device *store.Device, clientLog waLog.Logger, assignedProxyURL string) (*whatsmeow.Client, error) {
 	client := whatsmeow.NewClient(device, clientLog)
 	client.EnableAutoReconnect = true
 	client.AutoTrustIdentity = true
 
-	// Configure proxy if enabled
+	// Use assigned proxy if provided (sticky assignment)
+	if assignedProxyURL != "" {
+		err := client.SetProxyAddress(assignedProxyURL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to set assigned proxy address: %w", err)
+		}
+		log.Printf("[Proxy] Using ASSIGNED proxy: %s", truncateProxy(assignedProxyURL))
+		return client, nil
+	}
+
+	// Fallback to single proxy config if no assignment
 	if m.proxyConfig != nil && m.proxyConfig.Enabled {
 		proxyURL := m.proxyConfig.GetURL()
 		if proxyURL != "" {
-			// Use whatsmeow's built-in SetProxyAddress which supports SOCKS5 with auth
-			// Format: socks5://user:pass@host:port
 			err := client.SetProxyAddress(proxyURL)
 			if err != nil {
 				return nil, fmt.Errorf("failed to set proxy address: %w", err)
 			}
-			log.Printf("[Proxy] Using proxy: %s", m.proxyConfig.String())
+			log.Printf("[Proxy] Using fallback proxy: %s", m.proxyConfig.String())
 		}
 	}
 
@@ -190,9 +214,28 @@ func (m *ClientManager) ConnectAccount(ctx context.Context, phone string) (*Conn
 	store.DeviceProps.PlatformType = &platform
 	store.DeviceProps.Os = &osName
 
-	// Create WhatsApp client with proxy support
+	// Load existing metadata FIRST to get assigned proxy
+	meta := m.loadAccountMeta(phone)
+	isNewAccount := meta == nil
+
+	// Determine which proxy to use
+	var assignedProxy string
+	if meta != nil && meta.AssignedProxy != "" {
+		// Use existing assigned proxy
+		assignedProxy = meta.AssignedProxy
+		log.Printf("[%s] Using existing assigned proxy: %s", phone, truncateProxy(assignedProxy))
+	} else if m.proxyPool != nil && m.proxyPool.Count() > 0 {
+		// Assign a new proxy from the pool
+		proxy := m.proxyPool.AssignProxyToPhone(phone)
+		if proxy.Enabled {
+			assignedProxy = proxy.GetURL()
+			log.Printf("[%s] Assigned NEW proxy: %s", phone, truncateProxy(assignedProxy))
+		}
+	}
+
+	// Create WhatsApp client with the assigned proxy
 	clientLog := waLog.Stdout("Client-"+phone, "INFO", true)
-	client, err := m.createClientWithProxy(device, clientLog)
+	client, err := m.createClientWithProxy(device, clientLog, assignedProxy)
 	if err != nil {
 		container.Close()
 		return nil, fmt.Errorf("failed to create client with proxy: %w", err)
@@ -200,17 +243,16 @@ func (m *ClientManager) ConnectAccount(ctx context.Context, phone string) (*Conn
 
 	// Create account entry
 	acc := &AccountClient{
-		Phone:     phone,
-		Client:    client,
-		Container: container,
-		Connected: false,
-		LoggedIn:  false,
+		Phone:         phone,
+		Client:        client,
+		Container:     container,
+		Connected:     false,
+		LoggedIn:      false,
+		AssignedProxy: assignedProxy,
 	}
 
-	// Load existing metadata or set as new account
-	meta := m.loadAccountMeta(phone)
+	// Apply rest of metadata
 	m.applyAccountMeta(acc, meta)
-	isNewAccount := meta == nil
 
 	m.accounts[phone] = acc
 
@@ -466,9 +508,28 @@ func (m *ClientManager) ConnectWithPairingCode(ctx context.Context, phone string
 	store.DeviceProps.PlatformType = &platform
 	store.DeviceProps.Os = &osName
 
-	// Create WhatsApp client with proxy support
+	// Load existing metadata FIRST to get assigned proxy
+	metaPair := m.loadAccountMeta(phone)
+	isNewAccountPair := metaPair == nil
+
+	// Determine which proxy to use
+	var assignedProxyPair string
+	if metaPair != nil && metaPair.AssignedProxy != "" {
+		// Use existing assigned proxy
+		assignedProxyPair = metaPair.AssignedProxy
+		log.Printf("[%s] Using existing assigned proxy: %s", phone, truncateProxy(assignedProxyPair))
+	} else if m.proxyPool != nil && m.proxyPool.Count() > 0 {
+		// Assign a new proxy from the pool
+		proxy := m.proxyPool.AssignProxyToPhone(phone)
+		if proxy.Enabled {
+			assignedProxyPair = proxy.GetURL()
+			log.Printf("[%s] Assigned NEW proxy for pairing: %s", phone, truncateProxy(assignedProxyPair))
+		}
+	}
+
+	// Create WhatsApp client with the assigned proxy
 	clientLog := waLog.Stdout("Client-"+phone, "INFO", true)
-	client, err := m.createClientWithProxy(device, clientLog)
+	client, err := m.createClientWithProxy(device, clientLog, assignedProxyPair)
 	if err != nil {
 		container.Close()
 		return nil, fmt.Errorf("failed to create client with proxy: %w", err)
@@ -476,17 +537,16 @@ func (m *ClientManager) ConnectWithPairingCode(ctx context.Context, phone string
 
 	// Create account entry
 	acc := &AccountClient{
-		Phone:     phone,
-		Client:    client,
-		Container: container,
-		Connected: false,
-		LoggedIn:  false,
+		Phone:         phone,
+		Client:        client,
+		Container:     container,
+		Connected:     false,
+		LoggedIn:      false,
+		AssignedProxy: assignedProxyPair,
 	}
 
-	// Load existing metadata or set as new account
-	metaPair := m.loadAccountMeta(phone)
+	// Apply rest of metadata
 	m.applyAccountMeta(acc, metaPair)
-	isNewAccountPair := metaPair == nil
 
 	m.accounts[phone] = acc
 
@@ -508,7 +568,7 @@ func (m *ClientManager) ConnectWithPairingCode(ctx context.Context, phone string
 
 			if acc.LoggedIn {
 				log.Printf("[%s] Connected with existing session", phone)
-				// Save meta if new account
+				// Save meta if new account (includes proxy assignment)
 				if isNewAccountPair {
 					m.saveAccountMeta(phone, acc)
 					log.Printf("[%s] New account - warmup period started (3 days)", phone)
@@ -698,10 +758,20 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 	go m.reportMessageToMaster(fromPhone, err == nil, err)
 
 	if err != nil {
+		// Check if this might be a proxy failure
+		if isProxyError(err) {
+			m.handleProxyFailure(fromPhone, acc)
+		}
 		return nil, fmt.Errorf("failed to send message: %w", err)
 	}
 
-	log.Printf("[%s] Message sent to %s (typing delay: %v)", fromPhone, toPhone, typingDelay)
+	// Reset proxy failure count on success
+	if acc.ProxyFailCount > 0 {
+		acc.ProxyFailCount = 0
+		log.Printf("[%s] Proxy failure count reset after successful send", fromPhone)
+	}
+
+	log.Printf("[%s] Message sent to %s (typing delay: %v, proxy: %s)", fromPhone, toPhone, typingDelay, truncateProxy(acc.AssignedProxy))
 
 	return &SendResult{
 		MessageID: resp.ID,
@@ -710,6 +780,60 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 		ToPhone:   toPhone,
 	}, nil
 }
+
+// isProxyError checks if an error is likely proxy-related
+func isProxyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := strings.ToLower(err.Error())
+	proxyErrors := []string{
+		"proxy",
+		"socks",
+		"connection refused",
+		"connection reset",
+		"timeout",
+		"network unreachable",
+		"host unreachable",
+		"no route to host",
+		"i/o timeout",
+	}
+	for _, pe := range proxyErrors {
+		if strings.Contains(errStr, pe) {
+			return true
+		}
+	}
+	return false
+}
+
+// handleProxyFailure handles proxy failures and potentially reassigns proxy
+func (m *ClientManager) handleProxyFailure(phone string, acc *AccountClient) {
+	acc.ProxyFailCount++
+	acc.LastProxyFailure = time.Now()
+	
+	log.Printf("[%s] Proxy failure #%d for proxy: %s", phone, acc.ProxyFailCount, truncateProxy(acc.AssignedProxy))
+	
+	// After 3 consecutive failures, try to reassign proxy
+	if acc.ProxyFailCount >= 3 && m.proxyPool != nil && m.proxyPool.Count() > 1 {
+		log.Printf("[%s] Too many proxy failures, attempting to reassign proxy...", phone)
+		
+		newProxy := m.proxyPool.ReassignProxy(phone)
+		if newProxy.Enabled && newProxy.GetURL() != acc.AssignedProxy {
+			oldProxy := acc.AssignedProxy
+			acc.AssignedProxy = newProxy.GetURL()
+			acc.ProxyFailCount = 0
+			
+			// Save the new assignment
+			if err := m.saveAccountMeta(phone, acc); err != nil {
+				log.Printf("[%s] Failed to save new proxy assignment: %v", phone, err)
+			}
+			
+			log.Printf("[%s] PROXY REASSIGNED: %s -> %s", phone, truncateProxy(oldProxy), truncateProxy(acc.AssignedProxy))
+			
+			// Note: The client will use the new proxy on next reconnect
+			// For immediate effect, we could disconnect and reconnect, but that's disruptive
+		}
+	}
 
 // applyMessageVariation adds invisible characters for uniqueness
 func applyMessageVariation(message string) string {
@@ -1040,9 +1164,27 @@ func (m *ClientManager) loadAndValidateSession(ctx context.Context, phone string
 	store.DeviceProps.PlatformType = &platform
 	store.DeviceProps.Os = &osName
 
-	// Create client with quieter logging and proxy support
+	// Load existing metadata FIRST to get assigned proxy
+	loadedMeta := m.loadAccountMeta(phone)
+
+	// Determine which proxy to use
+	var assignedProxyLoad string
+	if loadedMeta != nil && loadedMeta.AssignedProxy != "" {
+		// Use existing assigned proxy
+		assignedProxyLoad = loadedMeta.AssignedProxy
+		log.Printf("[%s] Restoring assigned proxy: %s", phone, truncateProxy(assignedProxyLoad))
+	} else if m.proxyPool != nil && m.proxyPool.Count() > 0 {
+		// Assign a new proxy from the pool (shouldn't happen for existing sessions)
+		proxy := m.proxyPool.AssignProxyToPhone(phone)
+		if proxy.Enabled {
+			assignedProxyLoad = proxy.GetURL()
+			log.Printf("[%s] Assigned proxy for existing session: %s", phone, truncateProxy(assignedProxyLoad))
+		}
+	}
+
+	// Create client with quieter logging and the assigned proxy
 	clientLog := waLog.Stdout("Client-"+phone, "WARN", true)
-	client, err := m.createClientWithProxy(device, clientLog)
+	client, err := m.createClientWithProxy(device, clientLog, assignedProxyLoad)
 	if err != nil {
 		container.Close()
 		return false, fmt.Errorf("failed to create client with proxy: %w", err)
@@ -1057,10 +1199,10 @@ func (m *ClientManager) loadAndValidateSession(ctx context.Context, phone string
 		LoggedIn:           false,
 		lastConnectedState: false,
 		lastLoggedInState:  false,
+		AssignedProxy:      assignedProxyLoad,
 	}
 
-	// Load existing metadata
-	loadedMeta := m.loadAccountMeta(phone)
+	// Apply rest of metadata
 	m.applyAccountMeta(acc, loadedMeta)
 
 	// Set up event handler
@@ -1137,6 +1279,7 @@ type AccountMeta struct {
 	CreatedAt      string `json:"created_at"`
 	LastWarmupSent string `json:"last_warmup_sent,omitempty"`
 	WarmupComplete bool   `json:"warmup_complete"`
+	AssignedProxy  string `json:"assigned_proxy,omitempty"` // Dedicated proxy URL for this account
 }
 
 // saveAccountMeta saves account metadata to a JSON file
@@ -1146,6 +1289,7 @@ func (m *ClientManager) saveAccountMeta(phone string, acc *AccountClient) error 
 	meta := AccountMeta{
 		CreatedAt:      acc.CreatedAt.Format(time.RFC3339),
 		WarmupComplete: acc.WarmupComplete,
+		AssignedProxy:  acc.AssignedProxy, // Save dedicated proxy assignment
 	}
 	if !acc.LastWarmupSent.IsZero() {
 		meta.LastWarmupSent = acc.LastWarmupSent.Format(time.RFC3339)
@@ -1160,7 +1304,19 @@ func (m *ClientManager) saveAccountMeta(phone string, acc *AccountClient) error 
 		return fmt.Errorf("failed to write meta file: %w", err)
 	}
 
+	log.Printf("[%s] Saved account meta (proxy: %s)", phone, truncateProxy(acc.AssignedProxy))
 	return nil
+}
+
+// truncateProxy returns a shortened proxy URL for logging
+func truncateProxy(proxyURL string) string {
+	if proxyURL == "" {
+		return "none"
+	}
+	if len(proxyURL) > 50 {
+		return proxyURL[:50] + "..."
+	}
+	return proxyURL
 }
 
 // loadAccountMeta loads account metadata from a JSON file
@@ -1206,6 +1362,12 @@ func (m *ClientManager) applyAccountMeta(acc *AccountClient, meta *AccountMeta) 
 	}
 
 	acc.WarmupComplete = meta.WarmupComplete
+
+	// Restore assigned proxy
+	if meta.AssignedProxy != "" {
+		acc.AssignedProxy = meta.AssignedProxy
+		log.Printf("[%s] Restored assigned proxy from meta: %s", acc.Phone, truncateProxy(acc.AssignedProxy))
+	}
 }
 
 // UpdateWarmupSent updates the last warmup sent time and saves metadata
@@ -1255,6 +1417,32 @@ func (m *ClientManager) GetActiveAccounts() []*AccountClient {
 		}
 	}
 	return active
+}
+
+// GetAccountProxyAssignments returns proxy assignments for all accounts
+func (m *ClientManager) GetAccountProxyAssignments() []map[string]interface{} {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make([]map[string]interface{}, 0, len(m.accounts))
+	for _, acc := range m.accounts {
+		proxyDisplay := acc.AssignedProxy
+		if len(proxyDisplay) > 70 {
+			proxyDisplay = proxyDisplay[:70] + "..."
+		}
+		if proxyDisplay == "" {
+			proxyDisplay = "none"
+		}
+
+		result = append(result, map[string]interface{}{
+			"phone":            acc.Phone,
+			"assigned_proxy":   proxyDisplay,
+			"logged_in":        acc.LoggedIn,
+			"connected":        acc.Connected,
+			"proxy_fail_count": acc.ProxyFailCount,
+		})
+	}
+	return result
 }
 
 // registerWithMaster registers a new account with the Master server for warmup tracking

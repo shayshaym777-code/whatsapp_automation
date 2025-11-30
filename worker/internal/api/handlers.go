@@ -454,16 +454,21 @@ func (s *Server) handleWarmupStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /proxy/stats - Get proxy pool statistics
+// GET /proxy/stats - Get proxy pool statistics with sticky assignments
 func (s *Server) handleProxyStats(w http.ResponseWriter, r *http.Request) {
 	var stats map[string]interface{}
 	
-	if s.ProxyPool != nil && s.ProxyPool.IsEnabled() {
-		stats = s.ProxyPool.GetStats()
-		stats["rotation_enabled"] = true
+	// Get proxy pool from client manager
+	proxyPool := s.client.GetProxyPool()
+	
+	if proxyPool != nil && proxyPool.IsEnabled() {
+		// Get assignment stats (which phone has which proxy)
+		stats = proxyPool.GetAssignmentStats()
+		stats["mode"] = "sticky_assignment"
+		stats["description"] = "Each phone number gets a dedicated proxy"
 	} else if s.ProxyConfig != nil && s.ProxyConfig.Enabled {
 		stats = map[string]interface{}{
-			"rotation_enabled": false,
+			"mode": "single_proxy",
 			"single_proxy": map[string]interface{}{
 				"host":    s.ProxyConfig.Host,
 				"port":    s.ProxyConfig.Port,
@@ -473,13 +478,17 @@ func (s *Server) handleProxyStats(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		stats = map[string]interface{}{
-			"rotation_enabled": false,
-			"proxy_enabled":    false,
+			"mode":          "no_proxy",
+			"proxy_enabled": false,
 		}
 	}
 	
 	stats["worker_id"] = s.WorkerID
 	stats["proxy_country"] = s.ProxyCountry
+	
+	// Add account proxy info from client manager
+	accountProxies := s.client.GetAccountProxyAssignments()
+	stats["account_proxies"] = accountProxies
 	
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
