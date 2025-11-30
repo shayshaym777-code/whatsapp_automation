@@ -344,10 +344,10 @@ func (p *ProxyPool) GetAssignmentStats() map[string]interface{} {
 			}
 		}
 		proxyStats[i] = map[string]interface{}{
-			"index":            i,
-			"proxy":            proxy.String(),
-			"assigned_count":   count,
-			"assigned_phones":  phones,
+			"index":           i,
+			"proxy":           proxy.String(),
+			"assigned_count":  count,
+			"assigned_phones": phones,
 		}
 	}
 
@@ -396,11 +396,11 @@ func (p *ProxyPool) GetStats() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"total_proxies":   len(p.proxies),
-		"current_index":   p.currentIndex,
-		"max_per_proxy":   p.maxPerProxy,
-		"cooldown_hours":  p.cooldownHours,
-		"proxies":         stats,
+		"total_proxies":  len(p.proxies),
+		"current_index":  p.currentIndex,
+		"max_per_proxy":  p.maxPerProxy,
+		"cooldown_hours": p.cooldownHours,
+		"proxies":        stats,
 	}
 }
 

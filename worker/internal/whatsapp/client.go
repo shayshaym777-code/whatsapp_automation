@@ -735,7 +735,7 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 	typingDelay := calculateTypingDelay(variedMessage)
 
 	// Send "composing" presence to show typing indicator
-	if err := acc.Client.SendPresence(types.PresenceAvailable); err != nil {
+	if err := acc.Client.SendPresence(ctx, types.PresenceAvailable); err != nil {
 		log.Printf("[%s] Failed to send presence: %v", fromPhone, err)
 	}
 
@@ -834,6 +834,7 @@ func (m *ClientManager) handleProxyFailure(phone string, acc *AccountClient) {
 			// For immediate effect, we could disconnect and reconnect, but that's disruptive
 		}
 	}
+}
 
 // applyMessageVariation adds invisible characters for uniqueness
 func applyMessageVariation(message string) string {

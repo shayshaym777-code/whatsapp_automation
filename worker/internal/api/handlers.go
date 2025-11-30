@@ -30,7 +30,7 @@ type Server struct {
 func NewServer(workerID, deviceSeed, proxyCountry string, fp fingerprint.DeviceFingerprint, proxyConfig *config.ProxyConfig) (*Server, error) {
 	// Load proxy pool for rotation
 	proxyPool := config.LoadProxyPool()
-	
+
 	client := whatsapp.NewClientManager(fp, proxyCountry, workerID, proxyConfig)
 	monitor := whatsapp.NewConnectionMonitor(client)
 
@@ -56,17 +56,17 @@ func (s *Server) StartBackgroundServices(ctx context.Context) {
 	} else {
 		log.Printf("[STARTUP] Loaded %d sessions, skipped %d invalid sessions", loaded, skipped)
 	}
-	
+
 	// Clean up any accounts that failed to load properly
 	removed := s.client.CleanupInactiveAccounts()
 	if len(removed) > 0 {
 		log.Printf("[STARTUP] Cleaned up %d inactive accounts", len(removed))
 	}
-	
+
 	// Start the connection monitor
 	s.monitor.Start()
 	log.Printf("[STARTUP] Connection monitor started")
-	
+
 	// Start auto warmup for new accounts
 	s.client.StartAutoWarmup()
 	log.Printf("[STARTUP] Auto warmup system started")
@@ -99,13 +99,13 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	r.HandleFunc("/accounts/status", s.handleAccountsStatus).Methods(http.MethodGet)
 	r.HandleFunc("/accounts", s.handleAccountsList).Methods(http.MethodGet)
 	r.HandleFunc("/accounts/cleanup", s.handleAccountsCleanup).Methods(http.MethodPost) // Remove inactive accounts
-	
+
 	// Monitor endpoints
 	r.HandleFunc("/monitor/stats", s.handleMonitorStats).Methods(http.MethodGet)
-	
+
 	// Warmup endpoints
 	r.HandleFunc("/warmup/status", s.handleWarmupStatus).Methods(http.MethodGet)
-	
+
 	// Proxy endpoints
 	r.HandleFunc("/proxy/stats", s.handleProxyStats).Methods(http.MethodGet)
 }
@@ -419,24 +419,24 @@ func (s *Server) handleAccountsList(w http.ResponseWriter, r *http.Request) {
 // POST /accounts/cleanup - Remove all accounts that are not logged in
 func (s *Server) handleAccountsCleanup(w http.ResponseWriter, r *http.Request) {
 	removed := s.client.CleanupInactiveAccounts()
-	
+
 	// Reset monitor failures for removed accounts
 	for _, phone := range removed {
 		s.monitor.ResetFailures(phone)
 	}
-	
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success":         true,
-		"removed_count":   len(removed),
-		"removed_phones":  removed,
-		"message":         "Inactive accounts removed. They need manual re-pairing.",
+		"success":        true,
+		"removed_count":  len(removed),
+		"removed_phones": removed,
+		"message":        "Inactive accounts removed. They need manual re-pairing.",
 	})
 }
 
 // GET /monitor/stats - Get connection monitor statistics
 func (s *Server) handleMonitorStats(w http.ResponseWriter, r *http.Request) {
 	stats := s.monitor.GetReconnectStats()
-	
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"monitor": stats,
@@ -446,7 +446,7 @@ func (s *Server) handleMonitorStats(w http.ResponseWriter, r *http.Request) {
 // GET /warmup/status - Get warmup status for all accounts
 func (s *Server) handleWarmupStatus(w http.ResponseWriter, r *http.Request) {
 	statuses := s.client.GetWarmupStatus()
-	
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success":  true,
 		"count":    len(statuses),
@@ -457,10 +457,10 @@ func (s *Server) handleWarmupStatus(w http.ResponseWriter, r *http.Request) {
 // GET /proxy/stats - Get proxy pool statistics with sticky assignments
 func (s *Server) handleProxyStats(w http.ResponseWriter, r *http.Request) {
 	var stats map[string]interface{}
-	
+
 	// Get proxy pool from client manager
 	proxyPool := s.client.GetProxyPool()
-	
+
 	if proxyPool != nil && proxyPool.IsEnabled() {
 		// Get assignment stats (which phone has which proxy)
 		stats = proxyPool.GetAssignmentStats()
@@ -482,14 +482,14 @@ func (s *Server) handleProxyStats(w http.ResponseWriter, r *http.Request) {
 			"proxy_enabled": false,
 		}
 	}
-	
+
 	stats["worker_id"] = s.WorkerID
 	stats["proxy_country"] = s.ProxyCountry
-	
+
 	// Add account proxy info from client manager
 	accountProxies := s.client.GetAccountProxyAssignments()
 	stats["account_proxies"] = accountProxies
-	
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"proxy":   stats,
