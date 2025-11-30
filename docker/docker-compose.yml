@@ -150,13 +150,13 @@ services:
       PROXY_COUNTRY: ${WORKER_1_COUNTRY:-US}
       MASTER_URL: http://master:5000
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      # Proxy configuration - USA proxy with rotation
-      PROXY_HOST: ${PROXY_HOST:-185.193.157.60}
+      # Proxy configuration - USA proxy with 7-day sticky rotation
+      PROXY_HOST: ${PROXY_HOST:-geo.iproyal.com}
       PROXY_PORT: ${PROXY_PORT:-12321}
       PROXY_USER: ${PROXY_USER:-8ou9yomVguVTDM5q}
-      PROXY_PASS: ${WORKER_1_PROXY_PASS:-k5CuWpGcfNEZZX23_country-us_session-flJpw8BH_lifetime-24h_streaming-1}
+      PROXY_PASS: ${WORKER_1_PROXY_PASS:-k5CuWpGcfNEZZX23_country-us_session-VyOjwz28_lifetime-168h_streaming-1}
       PROXY_TYPE: ${PROXY_TYPE:-socks5}
-      # 24 US proxies for rotation
+      # 17 US proxies with 7-day sticky sessions
       PROXY_LIST: ${WORKER_1_PROXY_LIST:-}
     volumes:
       - worker1_sessions:/data/sessions
@@ -194,13 +194,13 @@ services:
       PROXY_COUNTRY: ${WORKER_2_COUNTRY:-US}
       MASTER_URL: http://master:5000
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      # Proxy configuration - USA proxy with rotation
-      PROXY_HOST: ${PROXY_HOST:-185.193.157.60}
+      # Proxy configuration - USA proxy with 7-day sticky rotation
+      PROXY_HOST: ${PROXY_HOST:-geo.iproyal.com}
       PROXY_PORT: ${PROXY_PORT:-12321}
       PROXY_USER: ${PROXY_USER:-8ou9yomVguVTDM5q}
-      PROXY_PASS: ${WORKER_2_PROXY_PASS:-k5CuWpGcfNEZZX23_country-us_session-gKUPCurl_lifetime-24h_streaming-1}
+      PROXY_PASS: ${WORKER_2_PROXY_PASS:-k5CuWpGcfNEZZX23_country-us_session-Xpa9hGuo_lifetime-168h_streaming-1}
       PROXY_TYPE: ${PROXY_TYPE:-socks5}
-      # 24 US proxies for rotation
+      # 17 US proxies with 7-day sticky sessions
       PROXY_LIST: ${WORKER_2_PROXY_LIST:-}
     volumes:
       - worker2_sessions:/data/sessions
@@ -238,13 +238,13 @@ services:
       PROXY_COUNTRY: ${WORKER_3_COUNTRY:-US}
       MASTER_URL: http://master:5000
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      # Proxy configuration - USA proxy with rotation
-      PROXY_HOST: ${PROXY_HOST:-185.193.157.60}
+      # Proxy configuration - USA proxy with 7-day sticky rotation
+      PROXY_HOST: ${PROXY_HOST:-geo.iproyal.com}
       PROXY_PORT: ${PROXY_PORT:-12321}
       PROXY_USER: ${PROXY_USER:-8ou9yomVguVTDM5q}
-      PROXY_PASS: ${WORKER_3_PROXY_PASS:-k5CuWpGcfNEZZX23_country-us_session-752mj5r3_lifetime-24h_streaming-1}
+      PROXY_PASS: ${WORKER_3_PROXY_PASS:-k5CuWpGcfNEZZX23_country-us_session-sFuWBrVR_lifetime-168h_streaming-1}
       PROXY_TYPE: ${PROXY_TYPE:-socks5}
-      # 24 US proxies for rotation
+      # 16 US proxies with 7-day sticky sessions
       PROXY_LIST: ${WORKER_3_PROXY_LIST:-}
     volumes:
       - worker3_sessions:/data/sessions
