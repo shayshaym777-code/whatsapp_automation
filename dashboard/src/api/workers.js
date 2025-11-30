@@ -183,13 +183,19 @@ export async function fetchAllAccounts() {
 
 /**
  * Connect account with pairing code
+ * @param {string} phone - Phone number with country code
+ * @param {object} worker - Worker object
+ * @param {boolean} skipWarmup - Skip warmup period (for established accounts)
  */
-export async function connectAccountWithPairingCode(phone, worker) {
+export async function connectAccountWithPairingCode(phone, worker, skipWarmup = false) {
     const url = getWorkerUrl(worker)
     const res = await fetch(`${url}/accounts/pair`, {
         method: 'POST',
         headers: getHeaders(),
-        body: JSON.stringify({ phone })
+        body: JSON.stringify({ 
+            phone,
+            skip_warmup: skipWarmup
+        })
     })
 
     if (!res.ok) {
@@ -208,14 +214,22 @@ export async function disconnectAccount(phone, workerPort) {
     if (!worker) throw new Error('Worker not found')
 
     const url = getWorkerUrl(worker)
-    const res = await fetch(`${url}/accounts/${encodeURIComponent(phone)}/disconnect`, {
+    const res = await fetch(`${url}/accounts/disconnect`, {
         method: 'POST',
-        headers: getHeaders()
+        headers: getHeaders(),
+        body: JSON.stringify({ phone })
     })
 
     if (!res.ok) {
-        const error = await res.json()
-        throw new Error(error.error || 'Failed to disconnect')
+        const text = await res.text()
+        let error = 'Failed to disconnect'
+        try {
+            const json = JSON.parse(text)
+            error = json.error || json.message || error
+        } catch (e) {
+            error = text || error
+        }
+        throw new Error(error)
     }
 
     return res.json()
@@ -366,11 +380,11 @@ export async function registerAccountForWarmup(phone, workerPort) {
  */
 export function getWarmupStages() {
   return [
-    { name: 'new_born', minDays: 0, maxDays: 3, dailyLimit: 5, delaySeconds: 120, description: 'Day 1-3: Very limited, 2 min delay' },
-    { name: 'baby', minDays: 4, maxDays: 7, dailyLimit: 15, delaySeconds: 90, description: 'Day 4-7: Light activity, 1.5 min delay' },
-    { name: 'toddler', minDays: 8, maxDays: 14, dailyLimit: 30, delaySeconds: 60, description: 'Day 8-14: Moderate, 1 min delay' },
-    { name: 'teen', minDays: 15, maxDays: 30, dailyLimit: 50, delaySeconds: 45, description: 'Day 15-30: Normal, 45 sec delay' },
-    { name: 'adult', minDays: 31, maxDays: 9999, dailyLimit: 100, delaySeconds: 30, description: 'Day 31+: Full activity, 30 sec delay' },
+    { day: '1-3', name: 'new_born', minDays: 0, maxDays: 3, maxMessages: 5, description: '🐣 New Born' },
+    { day: '4-7', name: 'baby', minDays: 4, maxDays: 7, maxMessages: 15, description: '👶 Baby' },
+    { day: '8-14', name: 'toddler', minDays: 8, maxDays: 14, maxMessages: 30, description: '🧒 Toddler' },
+    { day: '15-30', name: 'teen', minDays: 15, maxDays: 30, maxMessages: 50, description: '👦 Teen' },
+    { day: '31+', name: 'adult', minDays: 31, maxDays: 9999, maxMessages: 100, description: '🧑 Adult' },
   ]
 }
 

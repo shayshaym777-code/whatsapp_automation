@@ -8,6 +8,17 @@ import {
     getWarmupStages
 } from '../api/workers'
 
+// Country prefixes
+const COUNTRY_PREFIXES = {
+    US: '+1',
+    IL: '+972',
+    GB: '+44',
+    CA: '+1',
+    AU: '+61',
+    DE: '+49',
+    FR: '+33',
+}
+
 function AddAccount() {
     const navigate = useNavigate()
     const [phone, setPhone] = useState('')
@@ -16,12 +27,34 @@ function AddAccount() {
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState(null)
     const [status, setStatus] = useState('idle') // idle, requesting, waiting, success, error
+    const [skipWarmup, setSkipWarmup] = useState(false)
 
-    // Auto-detect country when phone changes
+    // Auto-detect country and add prefix when phone changes
     const handlePhoneChange = (value) => {
-        setPhone(value)
-        const country = detectCountry(value)
+        // Remove all non-digit characters except +
+        let cleanValue = value.replace(/[^\d+]/g, '')
+        
+        setPhone(cleanValue)
+        
+        // Auto-detect country from prefix
+        const country = detectCountry(cleanValue)
         const worker = getWorkerByCountry(country)
+        setSelectedWorker(worker)
+    }
+
+    // Add country prefix
+    const addPrefix = (countryCode) => {
+        const prefix = COUNTRY_PREFIXES[countryCode] || '+1'
+        if (!phone.startsWith('+')) {
+            setPhone(prefix + phone)
+        } else if (!phone.startsWith(prefix)) {
+            // Replace existing prefix
+            const phoneWithoutPrefix = phone.replace(/^\+\d+/, '')
+            setPhone(prefix + phoneWithoutPrefix)
+        }
+        
+        // Update worker
+        const worker = getWorkerByCountry(countryCode)
         setSelectedWorker(worker)
     }
 
@@ -43,7 +76,7 @@ function AddAccount() {
         setPairingCode(null)
 
         try {
-            const data = await connectAccountWithPairingCode(cleanPhone, selectedWorker)
+            const data = await connectAccountWithPairingCode(cleanPhone, selectedWorker, skipWarmup)
 
             if (data.pairing_code) {
                 setPairingCode(data.pairing_code)
@@ -76,7 +109,7 @@ function AddAccount() {
             }
 
             try {
-                const res = await fetch(`http://localhost:${selectedWorker.port}/accounts`)
+                const res = await fetch(`/worker${selectedWorker.id.replace('worker-', '')}/accounts`)
                 const data = await res.json()
                 const account = data.accounts?.find(a => a.phone === cleanPhone)
 
@@ -103,7 +136,34 @@ function AddAccount() {
 
             {/* Form */}
             <div className="card">
-                {/* Step 1: Phone Number (auto-detects worker) */}
+                {/* Quick Country Prefix Buttons */}
+                <div className="mb-6">
+                    <label className="block text-sm font-medium text-gray-300 mb-3">
+                        Quick Prefix
+                    </label>
+                    <div className="flex flex-wrap gap-2">
+                        <button
+                            onClick={() => addPrefix('US')}
+                            className="px-4 py-2 bg-wa-bg border border-wa-border rounded-lg hover:border-wa-green transition-colors"
+                        >
+                            🇺🇸 +1 (US)
+                        </button>
+                        <button
+                            onClick={() => addPrefix('IL')}
+                            className="px-4 py-2 bg-wa-bg border border-wa-border rounded-lg hover:border-wa-green transition-colors"
+                        >
+                            🇮🇱 +972 (IL)
+                        </button>
+                        <button
+                            onClick={() => addPrefix('GB')}
+                            className="px-4 py-2 bg-wa-bg border border-wa-border rounded-lg hover:border-wa-green transition-colors"
+                        >
+                            🇬🇧 +44 (UK)
+                        </button>
+                    </div>
+                </div>
+
+                {/* Step 1: Phone Number */}
                 <div className="mb-6">
                     <label className="block text-sm font-medium text-gray-300 mb-3">
                         1. Enter Phone Number
@@ -112,16 +172,16 @@ function AddAccount() {
                         type="tel"
                         value={phone}
                         onChange={(e) => handlePhoneChange(e.target.value)}
-                        placeholder="+972501234567"
-                        className="input"
+                        placeholder="+1234567890"
+                        className="input text-2xl font-mono tracking-wider"
                         disabled={status === 'waiting'}
                     />
                     <p className="text-xs text-gray-500 mt-2">
-                        Include country code. Worker will be auto-selected based on country.
+                        Click a country button above or type the full number with country code
                     </p>
                 </div>
 
-                {/* Step 2: Worker Selection (auto-selected but can override) */}
+                {/* Step 2: Worker Selection */}
                 <div className="mb-6">
                     <label className="block text-sm font-medium text-gray-300 mb-3">
                         2. Worker (auto-detected: {selectedWorker.flag} {selectedWorker.country})
@@ -139,10 +199,41 @@ function AddAccount() {
                             >
                                 <div className="text-2xl mb-2">{worker.flag}</div>
                                 <div className="text-sm font-medium">{worker.country}</div>
-                                <div className="text-xs text-gray-500">Port {worker.port}</div>
                             </button>
                         ))}
                     </div>
+                </div>
+
+                {/* Skip Warmup Checkbox */}
+                <div className="mb-6">
+                    <label className="flex items-center gap-3 cursor-pointer group">
+                        <div className="relative">
+                            <input
+                                type="checkbox"
+                                checked={skipWarmup}
+                                onChange={(e) => setSkipWarmup(e.target.checked)}
+                                className="sr-only"
+                                disabled={status === 'waiting'}
+                            />
+                            <div className={`w-6 h-6 rounded border-2 transition-all ${
+                                skipWarmup 
+                                    ? 'bg-wa-green border-wa-green' 
+                                    : 'border-gray-500 group-hover:border-wa-green'
+                            }`}>
+                                {skipWarmup && (
+                                    <svg className="w-4 h-4 text-white m-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                                    </svg>
+                                )}
+                            </div>
+                        </div>
+                        <div>
+                            <span className="text-white font-medium">Skip Warmup</span>
+                            <p className="text-xs text-gray-500">
+                                Check this for accounts that don't need warmup (existing/trusted accounts)
+                            </p>
+                        </div>
+                    </label>
                 </div>
 
                 {/* Error */}
@@ -207,48 +298,38 @@ function AddAccount() {
             </div>
 
             {/* Warmup Info */}
-            <div className="card">
-                <h3 className="text-lg font-semibold text-white mb-4">🔥 Auto Warmup</h3>
-                <p className="text-gray-400 text-sm mb-4">
-                    New accounts automatically enter a 3-day warmup period to prevent bans.
-                </p>
-                <div className="space-y-3">
-                    {warmupStages.map((stage) => (
-                        <div key={stage.day} className="flex items-center gap-3 text-sm">
-                            <div className="w-8 h-8 rounded-full bg-orange-500/20 text-orange-400 flex items-center justify-center font-bold">
-                                {stage.day}
+            {!skipWarmup && (
+                <div className="card">
+                    <h3 className="text-lg font-semibold text-white mb-4">🔥 Auto Warmup</h3>
+                    <p className="text-gray-400 text-sm mb-4">
+                        New accounts automatically enter a warmup period to prevent bans.
+                    </p>
+                    <div className="space-y-3">
+                        {warmupStages.map((stage) => (
+                            <div key={stage.day} className="flex items-center gap-3 text-sm">
+                                <div className="w-8 h-8 rounded-full bg-orange-500/20 text-orange-400 flex items-center justify-center font-bold">
+                                    {stage.day}
+                                </div>
+                                <div>
+                                    <span className="text-white">{stage.description}</span>
+                                    <span className="text-gray-500 ml-2">({stage.maxMessages} msgs max)</span>
+                                </div>
                             </div>
-                            <div>
-                                <span className="text-white">{stage.description}</span>
-                                <span className="text-gray-500 ml-2">({stage.maxMessages} msgs max)</span>
-                            </div>
-                        </div>
-                    ))}
+                        ))}
+                    </div>
                 </div>
-            </div>
+            )}
 
-            {/* Instructions */}
-            <div className="card">
-                <h3 className="text-lg font-semibold text-white mb-4">📋 Tips</h3>
-                <ul className="space-y-2 text-gray-400 text-sm">
-                    <li className="flex gap-2">
-                        <span className="text-wa-green">•</span>
-                        Use the correct country worker for your phone number
-                    </li>
-                    <li className="flex gap-2">
-                        <span className="text-wa-green">•</span>
-                        Each worker uses a proxy from its country for anti-ban
-                    </li>
-                    <li className="flex gap-2">
-                        <span className="text-wa-green">•</span>
-                        Don't skip the warmup period - it protects your account
-                    </li>
-                    <li className="flex gap-2">
-                        <span className="text-wa-green">•</span>
-                        The pairing code expires in 60 seconds - be quick!
-                    </li>
-                </ul>
-            </div>
+            {/* Skip Warmup Warning */}
+            {skipWarmup && (
+                <div className="card border-yellow-500/30">
+                    <h3 className="text-lg font-semibold text-yellow-400 mb-2">⚠️ Warmup Disabled</h3>
+                    <p className="text-gray-400 text-sm">
+                        This account will be able to send up to 100 messages/day immediately.
+                        Only skip warmup for accounts that are already established and trusted.
+                    </p>
+                </div>
+            )}
         </div>
     )
 }

@@ -4,14 +4,13 @@ import {
     WORKERS,
     fetchAllAccounts,
     disconnectAccount,
-    getAccountWarmup,
     cleanupAccounts
 } from '../api/workers'
 
 function Accounts() {
     const [accounts, setAccounts] = useState([])
     const [loading, setLoading] = useState(true)
-    const [filter, setFilter] = useState('all') // all, connected, disconnected, warmup
+    const [filter, setFilter] = useState('all') // all, connected, disconnected, warmup, sending
 
     useEffect(() => {
         fetchAccounts()
@@ -40,6 +39,19 @@ function Accounts() {
         }
     }
 
+    const handleDelete = async (account) => {
+        if (!confirm(`Delete ${account.phone}? This will remove the account completely.`)) return
+
+        try {
+            await disconnectAccount(account.phone, account.workerPort)
+            // Small delay then refresh
+            setTimeout(() => fetchAccounts(), 500)
+        } catch (err) {
+            // Even if disconnect fails, refresh to update UI
+            fetchAccounts()
+        }
+    }
+
     const handleCleanup = async () => {
         if (!confirm('Remove all non-logged-in accounts from all workers?')) return
 
@@ -52,11 +64,19 @@ function Accounts() {
         }
     }
 
+    // Calculate stats
+    const connectedCount = accounts.filter(a => a.connected && a.logged_in).length
+    const disconnectedCount = accounts.filter(a => !a.connected || !a.logged_in).length
+    const warmupCount = accounts.filter(a => !a.warmup_complete && a.connected && a.logged_in).length
+    // Sending = connected + logged in (both warmup and completed)
+    const sendingCount = accounts.filter(a => a.connected && a.logged_in).length
+
     const filteredAccounts = accounts.filter(account => {
         switch (filter) {
             case 'connected': return account.connected && account.logged_in
             case 'disconnected': return !account.connected || !account.logged_in
-            case 'warmup': return !account.warmup_complete
+            case 'warmup': return !account.warmup_complete && account.connected && account.logged_in
+            case 'sending': return account.connected && account.logged_in
             default: return true
         }
     })
@@ -89,7 +109,7 @@ function Accounts() {
             </div>
 
             {/* Stats */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                 <button
                     onClick={() => setFilter('all')}
                     className={`card text-center cursor-pointer transition-all ${filter === 'all' ? 'border-wa-green' : ''}`}
@@ -98,31 +118,32 @@ function Accounts() {
                     <div className="text-gray-400 text-sm">Total</div>
                 </button>
                 <button
+                    onClick={() => setFilter('sending')}
+                    className={`card text-center cursor-pointer transition-all ${filter === 'sending' ? 'border-wa-green' : ''}`}
+                >
+                    <div className="text-3xl font-bold text-blue-400">{sendingCount}</div>
+                    <div className="text-gray-400 text-sm">📤 Sending</div>
+                </button>
+                <button
                     onClick={() => setFilter('connected')}
                     className={`card text-center cursor-pointer transition-all ${filter === 'connected' ? 'border-wa-green' : ''}`}
                 >
-                    <div className="text-3xl font-bold text-green-400">
-                        {accounts.filter(a => a.connected && a.logged_in).length}
-                    </div>
+                    <div className="text-3xl font-bold text-green-400">{connectedCount}</div>
                     <div className="text-gray-400 text-sm">Connected</div>
                 </button>
                 <button
                     onClick={() => setFilter('disconnected')}
                     className={`card text-center cursor-pointer transition-all ${filter === 'disconnected' ? 'border-wa-green' : ''}`}
                 >
-                    <div className="text-3xl font-bold text-yellow-400">
-                        {accounts.filter(a => !a.connected || !a.logged_in).length}
-                    </div>
+                    <div className="text-3xl font-bold text-yellow-400">{disconnectedCount}</div>
                     <div className="text-gray-400 text-sm">Disconnected</div>
                 </button>
                 <button
                     onClick={() => setFilter('warmup')}
                     className={`card text-center cursor-pointer transition-all ${filter === 'warmup' ? 'border-wa-green' : ''}`}
                 >
-                    <div className="text-3xl font-bold text-orange-400">
-                        {accounts.filter(a => !a.warmup_complete).length}
-                    </div>
-                    <div className="text-gray-400 text-sm">In Warmup</div>
+                    <div className="text-3xl font-bold text-orange-400">{warmupCount}</div>
+                    <div className="text-gray-400 text-sm">🔥 In Warmup</div>
                 </button>
             </div>
 
@@ -149,6 +170,7 @@ function Accounts() {
                             key={account.phone || index}
                             account={account}
                             onDisconnect={() => handleDisconnect(account)}
+                            onDelete={() => handleDelete(account)}
                         />
                     ))}
                 </div>
@@ -164,19 +186,48 @@ function Accounts() {
     )
 }
 
-function AccountCard({ account, onDisconnect }) {
+function AccountCard({ account, onDisconnect, onDelete }) {
     const countryFlags = { US: '🇺🇸', IL: '🇮🇱', GB: '🇬🇧' }
     const isConnected = account.connected
     const isLoggedIn = account.logged_in
     const isActive = isConnected && isLoggedIn
+    const isSending = isActive // Both warmup and completed accounts can send
+    const isWarmup = !account.warmup_complete && isActive
+
+    // Determine status label and color
+    let statusLabel = 'Disconnected'
+    let statusClass = 'badge-error'
+    
+    if (isActive) {
+        if (isWarmup) {
+            statusLabel = '🔥 Warming Up'
+            statusClass = 'badge-warning'
+        } else {
+            statusLabel = 'Active'
+            statusClass = 'badge-success'
+        }
+    } else if (isConnected && !isLoggedIn) {
+        statusLabel = 'Not Logged In'
+        statusClass = 'badge-warning'
+    }
 
     return (
-        <div className={`card transition-all duration-300 ${isActive ? 'border-green-500/30' : 'border-yellow-500/30'
-            }`}>
+        <div className={`card transition-all duration-300 ${
+            isActive 
+                ? isWarmup 
+                    ? 'border-orange-500/30' 
+                    : 'border-green-500/30'
+                : 'border-red-500/30'
+        }`}>
             <div className="flex items-start justify-between mb-4">
                 <div className="flex items-center gap-3">
-                    <div className={`w-12 h-12 rounded-full flex items-center justify-center text-xl ${isActive ? 'bg-green-500/20' : 'bg-yellow-500/20'
-                        }`}>
+                    <div className={`w-12 h-12 rounded-full flex items-center justify-center text-xl ${
+                        isActive 
+                            ? isWarmup 
+                                ? 'bg-orange-500/20' 
+                                : 'bg-green-500/20'
+                            : 'bg-red-500/20'
+                    }`}>
                         {countryFlags[account.workerCountry] || '📱'}
                     </div>
                     <div>
@@ -184,8 +235,8 @@ function AccountCard({ account, onDisconnect }) {
                         <p className="text-xs text-gray-500">{account.worker}</p>
                     </div>
                 </div>
-                <span className={`badge ${isActive ? 'badge-success' : 'badge-warning'}`}>
-                    {isActive ? 'Active' : 'Inactive'}
+                <span className={`badge ${statusClass}`}>
+                    {statusLabel}
                 </span>
             </div>
 
@@ -203,6 +254,12 @@ function AccountCard({ account, onDisconnect }) {
                     </span>
                 </div>
                 <div className="flex justify-between text-sm">
+                    <span className="text-gray-400">Sending</span>
+                    <span className={isSending ? 'text-blue-400' : 'text-gray-500'}>
+                        {isSending ? '📤 Yes' : '— No'}
+                    </span>
+                </div>
+                <div className="flex justify-between text-sm">
                     <span className="text-gray-400">Warmup</span>
                     <span className={account.warmup_complete ? 'text-green-400' : 'text-orange-400'}>
                         {account.warmup_complete ? '✓ Complete' : '🔥 In Progress'}
@@ -217,20 +274,35 @@ function AccountCard({ account, onDisconnect }) {
             </div>
 
             <div className="flex gap-2">
-                <Link
-                    to={`/send?from=${encodeURIComponent(account.phone)}`}
-                    className="flex-1 py-2 px-3 bg-wa-green/20 text-wa-green rounded-lg text-sm font-medium
-                     hover:bg-wa-green/30 transition-colors text-center"
-                >
-                    Send Message
-                </Link>
-                <button
-                    onClick={onDisconnect}
-                    className="py-2 px-3 bg-red-500/20 text-red-400 rounded-lg text-sm font-medium
-                     hover:bg-red-500/30 transition-colors"
-                >
-                    ✗
-                </button>
+                {isActive ? (
+                    <>
+                        <Link
+                            to={`/send?from=${encodeURIComponent(account.phone)}`}
+                            className="flex-1 py-2 px-3 bg-wa-green/20 text-wa-green rounded-lg text-sm font-medium
+                             hover:bg-wa-green/30 transition-colors text-center"
+                        >
+                            Send Message
+                        </Link>
+                        <button
+                            onClick={onDisconnect}
+                            className="py-2 px-3 bg-red-500/20 text-red-400 rounded-lg text-sm font-medium
+                             hover:bg-red-500/30 transition-colors"
+                            title="Disconnect"
+                        >
+                            ✗
+                        </button>
+                    </>
+                ) : (
+                    <>
+                        <button
+                            onClick={onDelete}
+                            className="flex-1 py-2 px-3 bg-red-500/20 text-red-400 rounded-lg text-sm font-medium
+                             hover:bg-red-500/30 transition-colors text-center"
+                        >
+                            🗑️ Delete
+                        </button>
+                    </>
+                )}
             </div>
         </div>
     )
