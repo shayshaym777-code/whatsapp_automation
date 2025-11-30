@@ -6,7 +6,8 @@ import {
     getMasterHealth,
     getAllWarmupStatus,
     warmAllAccounts,
-    getHealthSummary
+    getHealthSummary,
+    getWarmupStages
 } from '../api/workers'
 
 function Dashboard() {
@@ -14,14 +15,17 @@ function Dashboard() {
         totalAccounts: 0,
         activeAccounts: 0,
         warmupAccounts: 0,
+        sendingAccounts: 0,
         messagesSentToday: 0,
-        workers: []
+        workers: [],
+        accounts: []
     })
     const [masterHealth, setMasterHealth] = useState(null)
     const [healthSummary, setHealthSummary] = useState(null)
     const [loading, setLoading] = useState(true)
     const [warmingAll, setWarmingAll] = useState(false)
     const [warmupStatus, setWarmupStatus] = useState([])
+    const [proxyStats, setProxyStats] = useState({})
 
     useEffect(() => {
         fetchStats()
@@ -40,16 +44,39 @@ function Dashboard() {
                 getHealthSummary()
             ])
 
-            const activeAccounts = accounts.filter(a => a.connected && a.logged_in).length
-            const warmupAccounts = warmup.reduce((sum, w) =>
-                sum + (w.accounts?.filter(a => !a.warmup_complete)?.length || 0), 0)
+            // Fetch proxy stats from each worker
+            const proxyStatsPromises = WORKERS.map(async (worker) => {
+                try {
+                    const url = window.location.hostname === 'localhost' 
+                        ? `http://localhost:${worker.port}` 
+                        : worker.proxyPath
+                    const res = await fetch(`${url}/proxy/stats`, { signal: AbortSignal.timeout(3000) })
+                    if (res.ok) {
+                        const data = await res.json()
+                        return { workerId: worker.id, ...data }
+                    }
+                } catch (e) {
+                    console.error(`Failed to fetch proxy stats from ${worker.id}`)
+                }
+                return { workerId: worker.id, proxy: null }
+            })
+            const proxyResults = await Promise.all(proxyStatsPromises)
+            const proxyStatsMap = {}
+            proxyResults.forEach(r => { proxyStatsMap[r.workerId] = r.proxy })
+            setProxyStats(proxyStatsMap)
+
+            const activeAccounts = accounts.filter(a => a.connected && a.logged_in)
+            const warmupAccountsList = accounts.filter(a => !a.warmup_complete && a.connected && a.logged_in)
+            const sendingAccounts = activeAccounts // All active accounts can send
 
             setStats({
                 totalAccounts: accounts.length,
-                activeAccounts,
-                warmupAccounts,
+                activeAccounts: activeAccounts.length,
+                warmupAccounts: warmupAccountsList.length,
+                sendingAccounts: sendingAccounts.length,
                 messagesSentToday: 0,
-                workers: workersHealth
+                workers: workersHealth,
+                accounts: accounts
             })
             setHealthSummary(health)
             setMasterHealth(master)
@@ -74,6 +101,58 @@ function Dashboard() {
             setWarmingAll(false)
         }
     }
+
+    // Calculate sending rate
+    const calculateSendingRate = () => {
+        const warmupStages = getWarmupStages()
+        let totalMessagesPerDay = 0
+        let accountBreakdown = []
+
+        stats.accounts.forEach(account => {
+            if (!account.connected || !account.logged_in) return
+
+            let dailyLimit = 100 // Default for completed warmup
+            let stage = 'Adult'
+
+            if (!account.warmup_complete) {
+                // Estimate based on account age (simplified)
+                // In reality, this would come from the server
+                const ageHours = account.account_age_hours || 0
+                const ageDays = ageHours / 24
+
+                if (ageDays <= 3) {
+                    dailyLimit = 5
+                    stage = 'New Born'
+                } else if (ageDays <= 7) {
+                    dailyLimit = 15
+                    stage = 'Baby'
+                } else if (ageDays <= 14) {
+                    dailyLimit = 30
+                    stage = 'Toddler'
+                } else if (ageDays <= 30) {
+                    dailyLimit = 50
+                    stage = 'Teen'
+                }
+            }
+
+            totalMessagesPerDay += dailyLimit
+            accountBreakdown.push({ phone: account.phone, dailyLimit, stage })
+        })
+
+        // Messages per minute (assuming 8 hours of active sending)
+        const activeHours = 8
+        const messagesPerHour = totalMessagesPerDay / activeHours
+        const messagesPerMinute = messagesPerHour / 60
+
+        return {
+            totalMessagesPerDay,
+            messagesPerHour: Math.round(messagesPerHour),
+            messagesPerMinute: messagesPerMinute.toFixed(1),
+            accountBreakdown
+        }
+    }
+
+    const sendingRate = calculateSendingRate()
 
     if (loading) {
         return (
@@ -109,6 +188,49 @@ function Dashboard() {
                 </button>
             </div>
 
+            {/* Sending Rate Card - NEW! */}
+            <div className="card bg-gradient-to-r from-blue-900/30 to-purple-900/30 border-blue-500/30">
+                <h3 className="text-xl font-semibold text-white mb-4">📤 Sending Capacity</h3>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="text-center">
+                        <div className="text-4xl font-bold text-blue-400">{stats.sendingAccounts}</div>
+                        <div className="text-sm text-gray-400">Sending Devices</div>
+                    </div>
+                    <div className="text-center">
+                        <div className="text-4xl font-bold text-green-400">{sendingRate.messagesPerMinute}</div>
+                        <div className="text-sm text-gray-400">Messages/Minute</div>
+                    </div>
+                    <div className="text-center">
+                        <div className="text-4xl font-bold text-purple-400">{sendingRate.messagesPerHour}</div>
+                        <div className="text-sm text-gray-400">Messages/Hour</div>
+                    </div>
+                    <div className="text-center">
+                        <div className="text-4xl font-bold text-yellow-400">{sendingRate.totalMessagesPerDay}</div>
+                        <div className="text-sm text-gray-400">Max/Day</div>
+                    </div>
+                </div>
+                
+                {/* Breakdown by stage */}
+                <div className="mt-6 pt-4 border-t border-wa-border">
+                    <h4 className="text-sm font-medium text-gray-400 mb-3">Breakdown by Stage</h4>
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                        {['New Born', 'Baby', 'Toddler', 'Teen', 'Adult'].map(stage => {
+                            const count = sendingRate.accountBreakdown.filter(a => a.stage === stage).length
+                            const limit = stage === 'New Born' ? 5 : stage === 'Baby' ? 15 : stage === 'Toddler' ? 30 : stage === 'Teen' ? 50 : 100
+                            const emoji = stage === 'New Born' ? '🐣' : stage === 'Baby' ? '👶' : stage === 'Toddler' ? '🧒' : stage === 'Teen' ? '👦' : '🧑'
+                            return (
+                                <div key={stage} className="bg-wa-bg rounded-lg p-3 text-center">
+                                    <div className="text-lg">{emoji}</div>
+                                    <div className="text-xl font-bold text-white">{count}</div>
+                                    <div className="text-xs text-gray-500">{stage}</div>
+                                    <div className="text-xs text-gray-600">{limit} msg/day</div>
+                                </div>
+                            )
+                        })}
+                    </div>
+                </div>
+            </div>
+
             {/* Stats Cards */}
             <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                 <StatCard
@@ -118,9 +240,9 @@ function Dashboard() {
                     color="green"
                 />
                 <StatCard
-                    title="Active"
-                    value={stats.activeAccounts}
-                    icon="✅"
+                    title="Sending"
+                    value={stats.sendingAccounts}
+                    icon="📤"
                     color="blue"
                 />
                 <StatCard
@@ -144,12 +266,17 @@ function Dashboard() {
                 />
             </div>
 
-            {/* Workers Status */}
+            {/* Workers & Proxy Status */}
             <div className="card">
-                <h3 className="text-xl font-semibold text-white mb-6">Workers Status</h3>
+                <h3 className="text-xl font-semibold text-white mb-6">🌐 Workers & Proxy Status</h3>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     {stats.workers.map((worker) => (
-                        <WorkerCard key={worker.id} worker={worker} />
+                        <WorkerCard 
+                            key={worker.id} 
+                            worker={worker} 
+                            proxyStats={proxyStats[worker.id]}
+                            accounts={stats.accounts.filter(a => a.workerId === worker.id)}
+                        />
                     ))}
                 </div>
             </div>
@@ -259,9 +386,13 @@ function StatCard({ title, value, subtitle, icon, color }) {
     )
 }
 
-function WorkerCard({ worker }) {
+function WorkerCard({ worker, proxyStats, accounts }) {
     const isOnline = worker.status === 'online'
     const countryFlags = { US: '🇺🇸', IL: '🇮🇱', GB: '🇬🇧' }
+    
+    const activeAccounts = accounts?.filter(a => a.connected && a.logged_in).length || 0
+    const totalProxies = proxyStats?.total_proxies || 0
+    const assignedProxies = proxyStats?.total_assignments || 0
 
     return (
         <div className={`bg-wa-bg border rounded-xl p-5 transition-all duration-300 ${isOnline ? 'border-green-500/30' : 'border-red-500/30'
@@ -278,8 +409,29 @@ function WorkerCard({ worker }) {
                     {isOnline ? 'Online' : 'Offline'}
                 </span>
             </div>
-            <div className="text-xs text-gray-500">
-                Proxy: {worker.country}
+            
+            {/* Stats */}
+            <div className="grid grid-cols-2 gap-2 mb-3">
+                <div className="bg-wa-card rounded-lg p-2 text-center">
+                    <div className="text-lg font-bold text-blue-400">{activeAccounts}</div>
+                    <div className="text-xs text-gray-500">Accounts</div>
+                </div>
+                <div className="bg-wa-card rounded-lg p-2 text-center">
+                    <div className="text-lg font-bold text-purple-400">{totalProxies}</div>
+                    <div className="text-xs text-gray-500">Proxies</div>
+                </div>
+            </div>
+            
+            {/* Proxy Info */}
+            <div className="text-xs text-gray-500 space-y-1">
+                <div className="flex justify-between">
+                    <span>Proxy Mode:</span>
+                    <span className="text-green-400">{proxyStats?.mode || 'Sticky'}</span>
+                </div>
+                <div className="flex justify-between">
+                    <span>Assigned:</span>
+                    <span className="text-white">{assignedProxies} / {totalProxies}</span>
+                </div>
             </div>
         </div>
     )
