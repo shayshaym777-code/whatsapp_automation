@@ -731,19 +731,27 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 	// === ANTI-BAN: Apply message variation ===
 	variedMessage := applyMessageVariation(message)
 
+	// === ANTI-BAN: Get stage-based delay ===
+	stageDelay := getDelayByStage(acc)
+	
 	// === ANTI-BAN: Simulate typing (human-like delay) ===
 	typingDelay := calculateTypingDelay(variedMessage)
+	
+	// Total delay = stage delay + typing simulation
+	totalDelay := stageDelay + typingDelay
 
 	// Send "composing" presence to show typing indicator
 	if err := acc.Client.SendPresence(ctx, types.PresenceAvailable); err != nil {
 		log.Printf("[%s] Failed to send presence: %v", fromPhone, err)
 	}
 
-	// Wait for typing simulation
+	log.Printf("[%s] Waiting %v before sending (stage: %v, typing: %v)", fromPhone, totalDelay, stageDelay, typingDelay)
+
+	// Wait for total delay
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-time.After(typingDelay):
+	case <-time.After(totalDelay):
 	}
 
 	// Create message
@@ -771,7 +779,7 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 		log.Printf("[%s] Proxy failure count reset after successful send", fromPhone)
 	}
 
-	log.Printf("[%s] Message sent to %s (typing delay: %v, proxy: %s)", fromPhone, toPhone, typingDelay, truncateProxy(acc.AssignedProxy))
+	log.Printf("[%s] Message sent to %s (delay: %v, proxy: %s)", fromPhone, toPhone, totalDelay, truncateProxy(acc.AssignedProxy))
 
 	return &SendResult{
 		MessageID: resp.ID,
@@ -858,30 +866,77 @@ func applyMessageVariation(message string) string {
 	return result
 }
 
-// calculateTypingDelay simulates human typing speed
-func calculateTypingDelay(message string) time.Duration {
-	// Base: 50-150ms per character
-	charCount := len(message)
-	perCharMs := 50 + rand.Intn(100)
-	typingTime := charCount * perCharMs
-
-	// Add word pauses (100-200ms between words)
-	wordCount := len(strings.Fields(message))
-	wordPauseMs := wordCount * (100 + rand.Intn(100))
-
-	// Add "thinking" pause (1-3 seconds)
-	thinkingMs := 1000 + rand.Intn(2000)
-
-	totalMs := typingTime + wordPauseMs + thinkingMs
-
-	// Cap at 15 seconds for long messages
-	if totalMs > 15000 {
-		totalMs = 15000
+// getDelayByStage returns the delay range based on account warmup stage
+// This is the PRIMARY delay between messages for anti-ban protection
+func getDelayByStage(acc *AccountClient) time.Duration {
+	// Stage-based delays (in seconds)
+	// These are the main delays between messages to avoid detection
+	type delayRange struct {
+		min int
+		max int
 	}
 
-	// Minimum 2 seconds
-	if totalMs < 2000 {
-		totalMs = 2000
+	var delays delayRange
+
+	if !acc.WarmupComplete {
+		// Calculate days since creation
+		daysSinceCreation := time.Since(acc.CreatedAt).Hours() / 24
+
+		if daysSinceCreation <= 3 {
+			// New Born: 30-60 seconds
+			delays = delayRange{30, 60}
+		} else if daysSinceCreation <= 7 {
+			// Baby: 20-40 seconds
+			delays = delayRange{20, 40}
+		} else if daysSinceCreation <= 14 {
+			// Toddler: 10-20 seconds
+			delays = delayRange{10, 20}
+		} else if daysSinceCreation <= 30 {
+			// Teen: 5-10 seconds
+			delays = delayRange{5, 10}
+		} else {
+			// Should be adult by now
+			delays = delayRange{3, 7}
+		}
+	} else {
+		// Warmup complete - check if veteran (60+ days)
+		daysSinceCreation := time.Since(acc.CreatedAt).Hours() / 24
+
+		if daysSinceCreation >= 60 {
+			// Veteran: 1-5 seconds
+			delays = delayRange{1, 5}
+		} else {
+			// Adult: 3-7 seconds
+			delays = delayRange{3, 7}
+		}
+	}
+
+	// Random delay within range
+	delaySeconds := delays.min + rand.Intn(delays.max-delays.min+1)
+	return time.Duration(delaySeconds) * time.Second
+}
+
+// calculateTypingDelay simulates human typing speed (additional to stage delay)
+func calculateTypingDelay(message string) time.Duration {
+	// Base: 30-80ms per character (faster than before)
+	charCount := len(message)
+	perCharMs := 30 + rand.Intn(50)
+	typingTime := charCount * perCharMs
+
+	// Add word pauses (50-100ms between words)
+	wordCount := len(strings.Fields(message))
+	wordPauseMs := wordCount * (50 + rand.Intn(50))
+
+	totalMs := typingTime + wordPauseMs
+
+	// Cap at 5 seconds for long messages (typing simulation only)
+	if totalMs > 5000 {
+		totalMs = 5000
+	}
+
+	// Minimum 500ms
+	if totalMs < 500 {
+		totalMs = 500
 	}
 
 	return time.Duration(totalMs) * time.Millisecond
