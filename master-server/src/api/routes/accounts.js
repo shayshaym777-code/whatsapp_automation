@@ -164,6 +164,153 @@ router.get('/warmup-status', async (req, res, next) => {
     }
 });
 
+// POST /api/accounts/:phone/register - Register new account for warmup
+router.post('/:phone/register', async (req, res, next) => {
+    try {
+        const phone = req.params.phone;
+        const { worker_id, country } = req.body;
+
+        if (!worker_id || !country) {
+            return res.status(400).json({ error: 'worker_id and country are required' });
+        }
+
+        // Check if account already exists
+        const existing = await query(
+            'SELECT * FROM warmup_accounts WHERE phone_number = $1',
+            [phone]
+        );
+
+        if (existing.rows.length > 0) {
+            // Account already registered, return existing data
+            return res.json({
+                success: true,
+                message: 'Account already registered for warmup',
+                account: existing.rows[0]
+            });
+        }
+
+        // Register new account for warmup
+        const result = await query(
+            `INSERT INTO warmup_accounts (phone_number, worker_id, country, stage, max_messages_per_day)
+             VALUES ($1, $2, $3, 'new_born', 5)
+             RETURNING *`,
+            [phone, worker_id, country]
+        );
+
+        console.log(`[Warmup] New account registered: ${phone} (${country}) on ${worker_id}`);
+
+        res.status(201).json({
+            success: true,
+            message: 'Account registered for warmup',
+            account: result.rows[0]
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// GET /api/accounts/:phone/warmup - Get warmup status for specific account
+router.get('/:phone/warmup', async (req, res, next) => {
+    try {
+        const phone = req.params.phone;
+
+        const result = await query(
+            'SELECT * FROM warmup_accounts WHERE phone_number = $1',
+            [phone]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Account not found in warmup system' });
+        }
+
+        const account = result.rows[0];
+        
+        // Calculate days since warmup started
+        const daysSinceStart = Math.floor(
+            (Date.now() - new Date(account.warmup_started_at).getTime()) / (1000 * 60 * 60 * 24)
+        );
+
+        // Determine current stage based on days
+        let currentStage = 'new_born';
+        let maxMessages = 5;
+        
+        if (daysSinceStart >= 8) {
+            currentStage = 'mature';
+            maxMessages = 100;
+        } else if (daysSinceStart >= 4) {
+            currentStage = 'growing';
+            maxMessages = 20;
+        }
+
+        // Update stage if changed
+        if (currentStage !== account.stage) {
+            await query(
+                `UPDATE warmup_accounts 
+                 SET stage = $1, max_messages_per_day = $2, is_warmup_complete = $3
+                 WHERE phone_number = $4`,
+                [currentStage, maxMessages, currentStage === 'mature', phone]
+            );
+            account.stage = currentStage;
+            account.max_messages_per_day = maxMessages;
+        }
+
+        res.json({
+            ...account,
+            days_since_start: daysSinceStart,
+            can_send_more: account.messages_sent_today < maxMessages,
+            messages_remaining: maxMessages - account.messages_sent_today
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// POST /api/accounts/:phone/warmup/message-sent - Record warmup message sent
+router.post('/:phone/warmup/message-sent', async (req, res, next) => {
+    try {
+        const phone = req.params.phone;
+        const { target_phone } = req.body;
+
+        const result = await query(
+            `UPDATE warmup_accounts 
+             SET messages_sent_today = messages_sent_today + 1,
+                 total_warmup_messages = total_warmup_messages + 1,
+                 last_warmup_message_at = CURRENT_TIMESTAMP,
+                 last_warmup_target = $2
+             WHERE phone_number = $1
+             RETURNING *`,
+            [phone, target_phone]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Account not found' });
+        }
+
+        res.json({
+            success: true,
+            account: result.rows[0]
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// POST /api/accounts/reset-daily-counts - Reset daily message counts (run at midnight)
+router.post('/reset-daily-counts', async (req, res, next) => {
+    try {
+        const result = await query(
+            `UPDATE warmup_accounts SET messages_sent_today = 0 RETURNING phone_number`
+        );
+
+        res.json({
+            success: true,
+            message: `Reset daily counts for ${result.rows.length} accounts`
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
 export default router;
 
 

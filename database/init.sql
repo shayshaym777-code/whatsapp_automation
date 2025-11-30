@@ -296,6 +296,53 @@ CREATE INDEX IF NOT EXISTS idx_daily_stats_account_id ON daily_stats(account_id)
 CREATE INDEX IF NOT EXISTS idx_daily_stats_date_range ON daily_stats(date, account_phone);
 
 -- ============================================
+-- WARMUP_ACCOUNTS TABLE
+-- Tracks account warmup progress
+-- ============================================
+CREATE TABLE IF NOT EXISTS warmup_accounts (
+    id SERIAL PRIMARY KEY,
+    phone_number VARCHAR(20) UNIQUE NOT NULL,
+    worker_id VARCHAR(50) NOT NULL,
+    country VARCHAR(5) NOT NULL,
+    
+    -- Warmup stages: new_born (day 1-3), growing (day 4-7), mature (day 8+)
+    stage VARCHAR(20) NOT NULL DEFAULT 'new_born',
+    
+    -- Message limits per stage
+    -- new_born: max 5 messages/day
+    -- growing: max 20 messages/day
+    -- mature: max 100 messages/day
+    max_messages_per_day INTEGER NOT NULL DEFAULT 5,
+    messages_sent_today INTEGER NOT NULL DEFAULT 0,
+    total_warmup_messages INTEGER NOT NULL DEFAULT 0,
+    
+    -- Warmup progress
+    warmup_started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    warmup_completed_at TIMESTAMP WITH TIME ZONE,
+    is_warmup_complete BOOLEAN NOT NULL DEFAULT FALSE,
+    
+    -- Last activity
+    last_warmup_message_at TIMESTAMP WITH TIME ZONE,
+    last_warmup_target VARCHAR(20),
+    
+    -- Timestamps
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    
+    CONSTRAINT warmup_stage_check CHECK (stage IN ('new_born', 'growing', 'mature'))
+);
+
+-- Indexes for warmup_accounts
+CREATE INDEX IF NOT EXISTS idx_warmup_accounts_phone ON warmup_accounts(phone_number);
+CREATE INDEX IF NOT EXISTS idx_warmup_accounts_worker ON warmup_accounts(worker_id);
+CREATE INDEX IF NOT EXISTS idx_warmup_accounts_stage ON warmup_accounts(stage);
+CREATE INDEX IF NOT EXISTS idx_warmup_accounts_active ON warmup_accounts(is_warmup_complete) WHERE is_warmup_complete = FALSE;
+
+-- Trigger for warmup_accounts updated_at
+CREATE TRIGGER update_warmup_accounts_updated_at BEFORE UPDATE ON warmup_accounts
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================
 -- SYSTEM_LOGS TABLE
 -- System-wide logging for debugging
 -- ============================================

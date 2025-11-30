@@ -192,6 +192,9 @@ func (m *ClientManager) sendWarmupMessage(from *AccountClient, toPhone string, m
 	// Update last warmup sent time
 	m.UpdateWarmupSent(from.Phone)
 
+	// Notify Master server about warmup message
+	go m.NotifyMasterWarmupMessage(from.Phone, toPhone)
+
 	log.Printf("[AutoWarmup] Sent successfully: %s -> %s", from.Phone, toPhone)
 }
 

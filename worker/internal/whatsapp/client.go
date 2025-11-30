@@ -1,10 +1,12 @@
 package whatsapp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -618,7 +620,8 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 		acc.lastLoggedInState = true
 		acc.lastStateChange = time.Now()
 		// For new accounts, CreatedAt is already set. Save meta now.
-		if acc.CreatedAt.IsZero() {
+		isNewAccount := acc.CreatedAt.IsZero()
+		if isNewAccount {
 			acc.CreatedAt = time.Now()
 		}
 		m.mu.Unlock()
@@ -627,6 +630,10 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 			log.Printf("[%s] Failed to save account meta after pairing: %v", phone, err)
 		} else {
 			log.Printf("[%s] New account - warmup period started (3 days)", phone)
+		}
+		// Register with Master server for warmup tracking
+		if isNewAccount {
+			go m.registerWithMaster(phone)
 		}
 
 	case *events.Message:
@@ -1135,4 +1142,88 @@ func (m *ClientManager) GetActiveAccounts() []*AccountClient {
 		}
 	}
 	return active
+}
+
+// registerWithMaster registers a new account with the Master server for warmup tracking
+func (m *ClientManager) registerWithMaster(phone string) {
+	masterURL := os.Getenv("MASTER_URL")
+	if masterURL == "" {
+		masterURL = "http://master:5000"
+	}
+
+	url := fmt.Sprintf("%s/api/accounts/%s/register", masterURL, phone)
+
+	payload := map[string]string{
+		"worker_id": m.WorkerID,
+		"country":   m.ProxyCountry,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("[%s] Failed to marshal register payload: %v", phone, err)
+		return
+	}
+
+	// Retry up to 3 times
+	for attempt := 1; attempt <= 3; attempt++ {
+		req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+		if err != nil {
+			log.Printf("[%s] Failed to create register request: %v", phone, err)
+			return
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Printf("[%s] Failed to register with Master (attempt %d/3): %v", phone, attempt, err)
+			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+			continue
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode == 200 || resp.StatusCode == 201 {
+			log.Printf("[%s] Successfully registered with Master for warmup tracking", phone)
+			return
+		}
+
+		log.Printf("[%s] Master returned status %d (attempt %d/3)", phone, resp.StatusCode, attempt)
+		time.Sleep(time.Duration(attempt) * 2 * time.Second)
+	}
+
+	log.Printf("[%s] Failed to register with Master after 3 attempts", phone)
+}
+
+// NotifyMasterWarmupMessage notifies Master that a warmup message was sent
+func (m *ClientManager) NotifyMasterWarmupMessage(fromPhone, toPhone string) {
+	masterURL := os.Getenv("MASTER_URL")
+	if masterURL == "" {
+		masterURL = "http://master:5000"
+	}
+
+	url := fmt.Sprintf("%s/api/accounts/%s/warmup/message-sent", masterURL, fromPhone)
+
+	payload := map[string]string{
+		"target_phone": toPhone,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
 }
