@@ -209,6 +209,30 @@ router.post('/:phone/register', async (req, res, next) => {
     }
 });
 
+// Warmup stages configuration
+const WARMUP_STAGES = [
+    { name: 'new_born', minDays: 0, maxDays: 3, dailyLimit: 5, delaySeconds: 120 },
+    { name: 'baby', minDays: 4, maxDays: 7, dailyLimit: 15, delaySeconds: 90 },
+    { name: 'toddler', minDays: 8, maxDays: 14, dailyLimit: 30, delaySeconds: 60 },
+    { name: 'teen', minDays: 15, maxDays: 30, dailyLimit: 50, delaySeconds: 45 },
+    { name: 'adult', minDays: 31, maxDays: 9999, dailyLimit: 100, delaySeconds: 30 },
+];
+
+// Helper function to get stage for days
+function getStageForDays(days) {
+    for (const stage of WARMUP_STAGES) {
+        if (days >= stage.minDays && days <= stage.maxDays) {
+            return stage;
+        }
+    }
+    return WARMUP_STAGES[WARMUP_STAGES.length - 1];
+}
+
+// GET /api/accounts/warmup/stages - Get warmup stages configuration
+router.get('/warmup/stages', async (req, res) => {
+    res.json({ stages: WARMUP_STAGES });
+});
+
 // GET /api/accounts/:phone/warmup - Get warmup status for specific account
 router.get('/:phone/warmup', async (req, res, next) => {
     try {
@@ -231,34 +255,30 @@ router.get('/:phone/warmup', async (req, res, next) => {
         );
 
         // Determine current stage based on days
-        let currentStage = 'new_born';
-        let maxMessages = 5;
-        
-        if (daysSinceStart >= 8) {
-            currentStage = 'mature';
-            maxMessages = 100;
-        } else if (daysSinceStart >= 4) {
-            currentStage = 'growing';
-            maxMessages = 20;
-        }
+        const stage = getStageForDays(daysSinceStart);
+        const isComplete = daysSinceStart >= 31;
 
         // Update stage if changed
-        if (currentStage !== account.stage) {
+        if (stage.name !== account.stage || isComplete !== account.is_warmup_complete) {
             await query(
                 `UPDATE warmup_accounts 
-                 SET stage = $1, max_messages_per_day = $2, is_warmup_complete = $3
+                 SET stage = $1, max_messages_per_day = $2, is_warmup_complete = $3,
+                     warmup_completed_at = CASE WHEN $3 = TRUE AND warmup_completed_at IS NULL THEN CURRENT_TIMESTAMP ELSE warmup_completed_at END
                  WHERE phone_number = $4`,
-                [currentStage, maxMessages, currentStage === 'mature', phone]
+                [stage.name, stage.dailyLimit, isComplete, phone]
             );
-            account.stage = currentStage;
-            account.max_messages_per_day = maxMessages;
+            account.stage = stage.name;
+            account.max_messages_per_day = stage.dailyLimit;
+            account.is_warmup_complete = isComplete;
         }
 
         res.json({
             ...account,
             days_since_start: daysSinceStart,
-            can_send_more: account.messages_sent_today < maxMessages,
-            messages_remaining: maxMessages - account.messages_sent_today
+            stage_info: stage,
+            can_send_more: account.messages_sent_today < stage.dailyLimit,
+            messages_remaining: stage.dailyLimit - account.messages_sent_today,
+            delay_seconds: stage.delaySeconds
         });
     } catch (err) {
         next(err);
@@ -306,6 +326,180 @@ router.post('/reset-daily-counts', async (req, res, next) => {
             success: true,
             message: `Reset daily counts for ${result.rows.length} accounts`
         });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ============================================
+// ACCOUNT HEALTH ENDPOINTS
+// ============================================
+
+// GET /api/accounts/:phone/health - Get account health/safety score
+router.get('/:phone/health', async (req, res, next) => {
+    try {
+        const phone = req.params.phone;
+
+        let result = await query(
+            'SELECT * FROM account_health WHERE phone_number = $1',
+            [phone]
+        );
+
+        // Create health record if doesn't exist
+        if (result.rows.length === 0) {
+            result = await query(
+                `INSERT INTO account_health (phone_number) VALUES ($1) RETURNING *`,
+                [phone]
+            );
+        }
+
+        res.json(result.rows[0]);
+    } catch (err) {
+        next(err);
+    }
+});
+
+// POST /api/accounts/:phone/health/message - Record message sent (updates health)
+router.post('/:phone/health/message', async (req, res, next) => {
+    try {
+        const phone = req.params.phone;
+        const { success, error } = req.body;
+
+        if (success) {
+            await query(
+                `INSERT INTO account_health (phone_number, messages_sent, messages_delivered)
+                 VALUES ($1, 1, 1)
+                 ON CONFLICT (phone_number) DO UPDATE SET
+                     messages_sent = account_health.messages_sent + 1,
+                     messages_delivered = account_health.messages_delivered + 1,
+                     delivery_rate = (account_health.messages_delivered + 1)::decimal / (account_health.messages_sent + 1) * 100`,
+                [phone]
+            );
+        } else {
+            await query(
+                `INSERT INTO account_health (phone_number, messages_sent, messages_failed, last_error, last_error_at, error_count)
+                 VALUES ($1, 1, 1, $2, CURRENT_TIMESTAMP, 1)
+                 ON CONFLICT (phone_number) DO UPDATE SET
+                     messages_sent = account_health.messages_sent + 1,
+                     messages_failed = account_health.messages_failed + 1,
+                     last_error = $2,
+                     last_error_at = CURRENT_TIMESTAMP,
+                     error_count = account_health.error_count + 1,
+                     delivery_rate = account_health.messages_delivered::decimal / (account_health.messages_sent + 1) * 100`,
+                [phone, error || 'Unknown error']
+            );
+        }
+
+        // Recalculate safety score
+        const health = await query('SELECT * FROM account_health WHERE phone_number = $1', [phone]);
+        if (health.rows.length > 0) {
+            const h = health.rows[0];
+            
+            // Calculate component scores
+            const activityScore = h.messages_sent > 0 
+                ? (h.messages_delivered / h.messages_sent) * 100 
+                : 50;
+            
+            const trustScore = h.messages_sent > 0
+                ? Math.max(0, h.delivery_rate - (h.error_count / h.messages_sent) * 100)
+                : 60;
+
+            // Calculate final score
+            const safetyScore = Math.round(
+                activityScore * 0.3 +
+                h.age_score * 0.2 +
+                trustScore * 0.3 +
+                h.pattern_score * 0.2
+            );
+
+            // Determine recommended action
+            let action = 'normal';
+            if (safetyScore < 60) action = 'stop';
+            else if (safetyScore < 70) action = 'pause';
+            else if (safetyScore < 80) action = 'very_slow';
+            else if (safetyScore < 90) action = 'slow';
+
+            await query(
+                `UPDATE account_health SET 
+                     safety_score = $1, activity_score = $2, trust_score = $3, recommended_action = $4
+                 WHERE phone_number = $5`,
+                [safetyScore, activityScore, trustScore, action, phone]
+            );
+        }
+
+        res.json({ success: true });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// POST /api/accounts/:phone/health/suspicious - Mark account as suspicious
+router.post('/:phone/health/suspicious', async (req, res, next) => {
+    try {
+        const phone = req.params.phone;
+        const { reason, suspend_hours } = req.body;
+
+        const suspendUntil = suspend_hours 
+            ? new Date(Date.now() + suspend_hours * 60 * 60 * 1000)
+            : null;
+
+        await query(
+            `INSERT INTO account_health (phone_number, is_suspicious, suspicious_reason, suspended_until, recommended_action)
+             VALUES ($1, TRUE, $2, $3, 'stop')
+             ON CONFLICT (phone_number) DO UPDATE SET
+                 is_suspicious = TRUE,
+                 suspicious_reason = $2,
+                 suspended_until = $3,
+                 recommended_action = 'stop'`,
+            [phone, reason, suspendUntil]
+        );
+
+        console.log(`[Health] Account ${phone} marked as suspicious: ${reason}`);
+
+        res.json({ success: true, suspended_until: suspendUntil });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// POST /api/accounts/:phone/health/clear - Clear suspicious status
+router.post('/:phone/health/clear', async (req, res, next) => {
+    try {
+        const phone = req.params.phone;
+
+        await query(
+            `UPDATE account_health SET 
+                 is_suspicious = FALSE, 
+                 suspicious_reason = NULL, 
+                 suspended_until = NULL,
+                 recommended_action = 'slow',
+                 error_count = 0
+             WHERE phone_number = $1`,
+            [phone]
+        );
+
+        res.json({ success: true });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// GET /api/accounts/health/summary - Get health summary for all accounts
+router.get('/health/summary', async (req, res, next) => {
+    try {
+        const result = await query(`
+            SELECT 
+                COUNT(*) as total_accounts,
+                COUNT(*) FILTER (WHERE safety_score >= 80) as healthy_accounts,
+                COUNT(*) FILTER (WHERE safety_score >= 60 AND safety_score < 80) as warning_accounts,
+                COUNT(*) FILTER (WHERE safety_score < 60) as critical_accounts,
+                COUNT(*) FILTER (WHERE is_suspicious = TRUE) as suspicious_accounts,
+                AVG(safety_score) as avg_safety_score,
+                AVG(delivery_rate) as avg_delivery_rate
+            FROM account_health
+        `);
+
+        res.json(result.rows[0]);
     } catch (err) {
         next(err);
     }

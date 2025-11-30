@@ -365,11 +365,29 @@ export async function registerAccountForWarmup(phone, workerPort) {
  * Get warmup stages configuration
  */
 export function getWarmupStages() {
-    return [
-        { day: 1, maxMessages: 5, description: 'Day 1: Very light activity' },
-        { day: 2, maxMessages: 10, description: 'Day 2: Light activity' },
-        { day: 3, maxMessages: 20, description: 'Day 3: Normal warmup complete' },
-    ]
+  return [
+    { name: 'new_born', minDays: 0, maxDays: 3, dailyLimit: 5, delaySeconds: 120, description: 'Day 1-3: Very limited, 2 min delay' },
+    { name: 'baby', minDays: 4, maxDays: 7, dailyLimit: 15, delaySeconds: 90, description: 'Day 4-7: Light activity, 1.5 min delay' },
+    { name: 'toddler', minDays: 8, maxDays: 14, dailyLimit: 30, delaySeconds: 60, description: 'Day 8-14: Moderate, 1 min delay' },
+    { name: 'teen', minDays: 15, maxDays: 30, dailyLimit: 50, delaySeconds: 45, description: 'Day 15-30: Normal, 45 sec delay' },
+    { name: 'adult', minDays: 31, maxDays: 9999, dailyLimit: 100, delaySeconds: 30, description: 'Day 31+: Full activity, 30 sec delay' },
+  ]
+}
+
+/**
+ * Get warmup stages from server
+ */
+export async function fetchWarmupStages() {
+  try {
+    const res = await fetch(`${MASTER_API}/accounts/warmup/stages`, {
+      headers: getHeaders()
+    })
+    if (!res.ok) return getWarmupStages()
+    const data = await res.json()
+    return data.stages || getWarmupStages()
+  } catch (error) {
+    return getWarmupStages()
+  }
 }
 
 // ============================================
@@ -442,19 +460,101 @@ export async function getMasterHealth() {
  * Get all workers status from master
  */
 export async function getWorkersFromMaster() {
-    try {
-        const res = await fetch(`${MASTER_API}/workers`, {
-            method: 'GET',
-            headers: getHeaders()
-        })
+  try {
+    const res = await fetch(`${MASTER_API}/workers`, {
+      method: 'GET',
+      headers: getHeaders()
+    })
+    
+    if (!res.ok) return []
+    
+    const data = await res.json()
+    return data.workers || []
+  } catch (error) {
+    console.error('Failed to get workers from master:', error)
+    return []
+  }
+}
 
-        if (!res.ok) return []
+// ============================================
+// Account Health API
+// ============================================
 
-        const data = await res.json()
-        return data.workers || []
-    } catch (error) {
-        console.error('Failed to get workers from master:', error)
-        return []
-    }
+/**
+ * Get account health/safety score
+ */
+export async function getAccountHealth(phone) {
+  try {
+    const res = await fetch(`${MASTER_API}/accounts/${encodeURIComponent(phone)}/health`, {
+      headers: getHeaders()
+    })
+    if (!res.ok) return null
+    return res.json()
+  } catch (error) {
+    console.error('Failed to get account health:', error)
+    return null
+  }
+}
+
+/**
+ * Get health summary for all accounts
+ */
+export async function getHealthSummary() {
+  try {
+    const res = await fetch(`${MASTER_API}/accounts/health/summary`, {
+      headers: getHeaders()
+    })
+    if (!res.ok) return null
+    return res.json()
+  } catch (error) {
+    console.error('Failed to get health summary:', error)
+    return null
+  }
+}
+
+/**
+ * Mark account as suspicious
+ */
+export async function markAccountSuspicious(phone, reason, suspendHours = 24) {
+  const res = await fetch(`${MASTER_API}/accounts/${encodeURIComponent(phone)}/health/suspicious`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ reason, suspend_hours: suspendHours })
+  })
+  
+  if (!res.ok) {
+    const error = await res.json()
+    throw new Error(error.error || 'Failed to mark account suspicious')
+  }
+  
+  return res.json()
+}
+
+/**
+ * Clear suspicious status
+ */
+export async function clearAccountSuspicious(phone) {
+  const res = await fetch(`${MASTER_API}/accounts/${encodeURIComponent(phone)}/health/clear`, {
+    method: 'POST',
+    headers: getHeaders()
+  })
+  
+  if (!res.ok) {
+    const error = await res.json()
+    throw new Error(error.error || 'Failed to clear suspicious status')
+  }
+  
+  return res.json()
+}
+
+/**
+ * Get recommended action for account based on safety score
+ */
+export function getRecommendedAction(safetyScore) {
+  if (safetyScore >= 90) return { action: 'normal', color: 'green', description: 'Full speed' }
+  if (safetyScore >= 80) return { action: 'slow', color: 'blue', description: 'Reduce 20%' }
+  if (safetyScore >= 70) return { action: 'very_slow', color: 'yellow', description: 'Reduce 50%' }
+  if (safetyScore >= 60) return { action: 'pause', color: 'orange', description: 'Pause & warmup' }
+  return { action: 'stop', color: 'red', description: 'Stop immediately' }
 }
 

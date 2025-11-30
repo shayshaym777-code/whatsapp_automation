@@ -12,41 +12,61 @@ import (
 )
 
 const (
-	// WarmupDuration is how long new accounts need warmup (3 days)
-	WarmupDuration = 3 * 24 * time.Hour
+	// WarmupDuration is how long new accounts need warmup (31 days for full maturity)
+	WarmupDuration = 31 * 24 * time.Hour
 
 	// WarmupCheckInterval is how often to check if accounts need warmup
-	WarmupCheckInterval = 30 * time.Minute
+	WarmupCheckInterval = 60 * time.Minute // Every hour
 
 	// WarmupMinInterval is minimum time between warmup messages for same account
-	WarmupMinInterval = 60 * time.Minute
+	WarmupMinInterval = 90 * time.Minute // 1.5 hours minimum
 
 	// WarmupMaxInterval is maximum time between warmup messages for same account
-	WarmupMaxInterval = 120 * time.Minute
+	WarmupMaxInterval = 180 * time.Minute // 3 hours maximum
 )
 
-// Warmup messages in Hebrew and English
+// Warmup messages in Hebrew and English - with spin variations
 var warmupMessages = []string{
+	// Hebrew greetings
 	"היי מה קורה?",
 	"מה נשמע?",
-	"Hey!",
 	"שלום!",
-	"בוקר טוב",
-	"ערב טוב",
+	"בוקר טוב ☀️",
+	"ערב טוב 🌙",
 	"מה המצב?",
-	"👋",
 	"איך הולך?",
-	"What's up?",
-	"Hi there!",
-	"Hello!",
 	"מה קורה?",
 	"הכל טוב?",
 	"שלום מה נשמע",
+	"היי 👋",
+	"מה נשמע אצלך?",
+	"איך היום שלך?",
+	"מה חדש?",
+	"הכל בסדר?",
+	// English greetings
+	"Hey!",
+	"Hi there!",
+	"Hello!",
+	"What's up?",
+	"How are you?",
+	"Good morning! ☀️",
+	"Good evening! 🌙",
+	"Hey there 👋",
+	"How's it going?",
+	"What's new?",
+	// Emojis only (universal)
+	"👋",
 	"👍",
 	"🙂",
-	"היי",
+	"😊",
+	"✌️",
+	"🤙",
+	// Short casual
 	"yo",
 	"hey hey",
+	"hii",
+	"sup",
+	"heya",
 }
 
 // StartAutoWarmup starts the automatic warmup system for new accounts
@@ -136,8 +156,9 @@ func (m *ClientManager) checkAndSendWarmup() {
 		// Send warmup message asynchronously
 		go m.sendWarmupMessage(acc, target.Phone, message)
 
-		// Small delay between sending from different accounts
-		time.Sleep(time.Duration(5+rand.Intn(10)) * time.Second)
+		// Longer delay between sending from different accounts (30-120 seconds)
+		delaySeconds := 30 + rand.Intn(90)
+		time.Sleep(time.Duration(delaySeconds) * time.Second)
 	}
 }
 

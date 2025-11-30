@@ -305,13 +305,15 @@ CREATE TABLE IF NOT EXISTS warmup_accounts (
     worker_id VARCHAR(50) NOT NULL,
     country VARCHAR(5) NOT NULL,
     
-    -- Warmup stages: new_born (day 1-3), growing (day 4-7), mature (day 8+)
+    -- Warmup stages: new_born, baby, toddler, teen, adult
     stage VARCHAR(20) NOT NULL DEFAULT 'new_born',
     
     -- Message limits per stage
-    -- new_born: max 5 messages/day
-    -- growing: max 20 messages/day
-    -- mature: max 100 messages/day
+    -- new_born (day 1-3): max 5 messages/day
+    -- baby (day 4-7): max 15 messages/day
+    -- toddler (day 8-14): max 30 messages/day
+    -- teen (day 15-30): max 50 messages/day
+    -- adult (day 31+): max 100 messages/day
     max_messages_per_day INTEGER NOT NULL DEFAULT 5,
     messages_sent_today INTEGER NOT NULL DEFAULT 0,
     total_warmup_messages INTEGER NOT NULL DEFAULT 0,
@@ -329,7 +331,7 @@ CREATE TABLE IF NOT EXISTS warmup_accounts (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     
-    CONSTRAINT warmup_stage_check CHECK (stage IN ('new_born', 'growing', 'mature'))
+    CONSTRAINT warmup_stage_check CHECK (stage IN ('new_born', 'baby', 'toddler', 'teen', 'adult'))
 );
 
 -- Indexes for warmup_accounts
@@ -340,6 +342,96 @@ CREATE INDEX IF NOT EXISTS idx_warmup_accounts_active ON warmup_accounts(is_warm
 
 -- Trigger for warmup_accounts updated_at
 CREATE TRIGGER update_warmup_accounts_updated_at BEFORE UPDATE ON warmup_accounts
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================
+-- WARMUP_STAGES TABLE
+-- Defines warmup stage configuration
+-- ============================================
+CREATE TABLE IF NOT EXISTS warmup_stages (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(20) UNIQUE NOT NULL,
+    min_days INTEGER NOT NULL,
+    max_days INTEGER NOT NULL,
+    daily_limit INTEGER NOT NULL,
+    delay_seconds INTEGER NOT NULL,
+    description TEXT
+);
+
+-- Insert default warmup stages
+INSERT INTO warmup_stages (name, min_days, max_days, daily_limit, delay_seconds, description) VALUES
+    ('new_born', 0, 3, 5, 120, 'Day 1-3: Very limited activity, 2 min delay'),
+    ('baby', 4, 7, 15, 90, 'Day 4-7: Light activity, 1.5 min delay'),
+    ('toddler', 8, 14, 30, 60, 'Day 8-14: Moderate activity, 1 min delay'),
+    ('teen', 15, 30, 50, 45, 'Day 15-30: Normal activity, 45 sec delay'),
+    ('adult', 31, 9999, 100, 30, 'Day 31+: Full activity, 30 sec delay')
+ON CONFLICT (name) DO NOTHING;
+
+-- ============================================
+-- WARMUP_MESSAGES TABLE
+-- Logs all warmup messages sent
+-- ============================================
+CREATE TABLE IF NOT EXISTS warmup_messages (
+    id SERIAL PRIMARY KEY,
+    from_phone VARCHAR(20) NOT NULL,
+    to_phone VARCHAR(20) NOT NULL,
+    message TEXT NOT NULL,
+    message_id VARCHAR(100),
+    worker_id VARCHAR(50),
+    sent_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    status VARCHAR(20) DEFAULT 'sent',
+    
+    CONSTRAINT warmup_messages_status_check CHECK (status IN ('sent', 'delivered', 'failed'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_warmup_messages_from ON warmup_messages(from_phone);
+CREATE INDEX IF NOT EXISTS idx_warmup_messages_to ON warmup_messages(to_phone);
+CREATE INDEX IF NOT EXISTS idx_warmup_messages_sent_at ON warmup_messages(sent_at);
+
+-- ============================================
+-- ACCOUNT_HEALTH TABLE
+-- Tracks account safety scores and health
+-- ============================================
+CREATE TABLE IF NOT EXISTS account_health (
+    id SERIAL PRIMARY KEY,
+    phone_number VARCHAR(20) UNIQUE NOT NULL,
+    
+    -- Safety score (0-100)
+    safety_score INTEGER NOT NULL DEFAULT 60,
+    activity_score DECIMAL(5,2) DEFAULT 50,
+    age_score DECIMAL(5,2) DEFAULT 20,
+    trust_score DECIMAL(5,2) DEFAULT 60,
+    pattern_score DECIMAL(5,2) DEFAULT 80,
+    
+    -- Delivery stats
+    messages_sent INTEGER NOT NULL DEFAULT 0,
+    messages_delivered INTEGER NOT NULL DEFAULT 0,
+    messages_failed INTEGER NOT NULL DEFAULT 0,
+    delivery_rate DECIMAL(5,2) DEFAULT 100,
+    
+    -- Error tracking
+    error_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    last_error_at TIMESTAMP WITH TIME ZONE,
+    
+    -- Suspicious activity
+    is_suspicious BOOLEAN NOT NULL DEFAULT FALSE,
+    suspicious_reason TEXT,
+    suspended_until TIMESTAMP WITH TIME ZONE,
+    
+    -- Recommended action: normal, slow, very_slow, pause, stop
+    recommended_action VARCHAR(20) DEFAULT 'normal',
+    
+    -- Timestamps
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_health_phone ON account_health(phone_number);
+CREATE INDEX IF NOT EXISTS idx_account_health_score ON account_health(safety_score);
+CREATE INDEX IF NOT EXISTS idx_account_health_suspicious ON account_health(is_suspicious) WHERE is_suspicious = TRUE;
+
+CREATE TRIGGER update_account_health_updated_at BEFORE UPDATE ON account_health
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================
