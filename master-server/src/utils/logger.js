@@ -1,6 +1,6 @@
-import winston from 'winston';
+const winston = require('winston');
 
-export const logger = winston.createLogger({
+const logger = winston.createLogger({
     level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
     format: winston.format.combine(
         winston.format.timestamp(),
@@ -16,4 +16,7 @@ export const logger = winston.createLogger({
     ]
 });
 
-export default logger;
+// Support both CommonJS and ESM imports
+module.exports = logger;
+module.exports.logger = logger;
+module.exports.default = logger;

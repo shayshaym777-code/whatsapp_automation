@@ -1,14 +1,14 @@
-import { Router } from 'express';
-import axios from 'axios';
-import { query } from '../../config/database.js';
+const { Router } = require('express');
+const axios = require('axios');
+const { query } = require('../../config/database');
 
 const router = Router();
 
 // Worker URLs configuration
 const WORKERS = [
     { id: 'worker-1', url: process.env.WORKER_1_URL || 'http://worker-1:3001', country: 'US' },
-    { id: 'worker-2', url: process.env.WORKER_2_URL || 'http://worker-2:3001', country: 'IL' },
-    { id: 'worker-3', url: process.env.WORKER_3_URL || 'http://worker-3:3001', country: 'GB' },
+    { id: 'worker-2', url: process.env.WORKER_2_URL || 'http://worker-2:3001', country: 'US' },
+    { id: 'worker-3', url: process.env.WORKER_3_URL || 'http://worker-3:3001', country: 'US' },
 ];
 
 // GET /api/accounts
@@ -505,6 +505,4 @@ router.get('/health/summary', async (req, res, next) => {
     }
 });
 
-export default router;
-
-
+module.exports = router;
