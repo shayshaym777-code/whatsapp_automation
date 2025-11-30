@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-
-const WORKERS = [
-  { id: 'worker-1', name: 'Worker 1 (US)', country: 'US', port: 3001, flag: '🇺🇸' },
-  { id: 'worker-2', name: 'Worker 2 (Israel)', country: 'IL', port: 3002, flag: '🇮🇱' },
-  { id: 'worker-3', name: 'Worker 3 (UK)', country: 'GB', port: 3003, flag: '🇬🇧' },
-]
+import { 
+  WORKERS, 
+  connectAccountWithPairingCode,
+  detectCountry,
+  getWorkerByCountry,
+  getWarmupStages
+} from '../api/workers'
 
 function AddAccount() {
   const navigate = useNavigate()
@@ -15,6 +16,14 @@ function AddAccount() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [status, setStatus] = useState('idle') // idle, requesting, waiting, success, error
+
+  // Auto-detect country when phone changes
+  const handlePhoneChange = (value) => {
+    setPhone(value)
+    const country = detectCountry(value)
+    const worker = getWorkerByCountry(country)
+    setSelectedWorker(worker)
+  }
 
   const requestPairingCode = async () => {
     if (!phone) {
@@ -34,21 +43,13 @@ function AddAccount() {
     setPairingCode(null)
 
     try {
-      const res = await fetch(`http://localhost:${selectedWorker.port}/accounts/pair`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: cleanPhone })
-      })
-
-      const data = await res.json()
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to get pairing code')
-      }
+      const data = await connectAccountWithPairingCode(cleanPhone, selectedWorker)
 
       if (data.pairing_code) {
         setPairingCode(data.pairing_code)
         setStatus('waiting')
+        // Start polling for connection status
+        startPolling(cleanPhone)
       } else if (data.status === 'already_connected') {
         setStatus('success')
         setTimeout(() => navigate('/accounts'), 2000)
@@ -61,24 +62,36 @@ function AddAccount() {
     }
   }
 
-  const checkStatus = async () => {
-    const cleanPhone = phone.replace(/\s/g, '').startsWith('+') 
-      ? phone.replace(/\s/g, '') 
-      : '+' + phone.replace(/\s/g, '')
-
-    try {
-      const res = await fetch(`http://localhost:${selectedWorker.port}/accounts`)
-      const data = await res.json()
-      
-      const account = data.accounts?.find(a => a.phone === cleanPhone)
-      if (account?.logged_in) {
-        setStatus('success')
-        setTimeout(() => navigate('/accounts'), 2000)
+  const startPolling = (cleanPhone) => {
+    let attempts = 0
+    const maxAttempts = 60 // 5 minutes (every 5 seconds)
+    
+    const poll = setInterval(async () => {
+      attempts++
+      if (attempts >= maxAttempts) {
+        clearInterval(poll)
+        setError('Pairing timeout. Please try again.')
+        setStatus('error')
+        return
       }
-    } catch (err) {
-      console.error('Status check failed:', err)
-    }
+
+      try {
+        const res = await fetch(`http://localhost:${selectedWorker.port}/accounts`)
+        const data = await res.json()
+        const account = data.accounts?.find(a => a.phone === cleanPhone)
+        
+        if (account?.logged_in) {
+          clearInterval(poll)
+          setStatus('success')
+          setTimeout(() => navigate('/accounts'), 2000)
+        }
+      } catch (err) {
+        console.error('Polling error:', err)
+      }
+    }, 5000)
   }
+
+  const warmupStages = getWarmupStages()
 
   return (
     <div className="max-w-2xl mx-auto space-y-8 animate-fade-in">
@@ -90,21 +103,40 @@ function AddAccount() {
 
       {/* Form */}
       <div className="card">
-        {/* Step 1: Select Worker */}
+        {/* Step 1: Phone Number (auto-detects worker) */}
         <div className="mb-6">
           <label className="block text-sm font-medium text-gray-300 mb-3">
-            1. Select Worker (by country)
+            1. Enter Phone Number
+          </label>
+          <input
+            type="tel"
+            value={phone}
+            onChange={(e) => handlePhoneChange(e.target.value)}
+            placeholder="+972501234567"
+            className="input"
+            disabled={status === 'waiting'}
+          />
+          <p className="text-xs text-gray-500 mt-2">
+            Include country code. Worker will be auto-selected based on country.
+          </p>
+        </div>
+
+        {/* Step 2: Worker Selection (auto-selected but can override) */}
+        <div className="mb-6">
+          <label className="block text-sm font-medium text-gray-300 mb-3">
+            2. Worker (auto-detected: {selectedWorker.flag} {selectedWorker.country})
           </label>
           <div className="grid grid-cols-3 gap-3">
             {WORKERS.map((worker) => (
               <button
                 key={worker.id}
                 onClick={() => setSelectedWorker(worker)}
+                disabled={status === 'waiting'}
                 className={`p-4 rounded-xl border transition-all duration-200 ${
                   selectedWorker.id === worker.id
                     ? 'bg-wa-green/20 border-wa-green text-white'
                     : 'bg-wa-bg border-wa-border text-gray-400 hover:border-wa-green/50'
-                }`}
+                } ${status === 'waiting' ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 <div className="text-2xl mb-2">{worker.flag}</div>
                 <div className="text-sm font-medium">{worker.country}</div>
@@ -112,24 +144,6 @@ function AddAccount() {
               </button>
             ))}
           </div>
-        </div>
-
-        {/* Step 2: Phone Number */}
-        <div className="mb-6">
-          <label className="block text-sm font-medium text-gray-300 mb-3">
-            2. Enter Phone Number
-          </label>
-          <input
-            type="tel"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            placeholder="+972501234567"
-            className="input"
-            disabled={status === 'waiting'}
-          />
-          <p className="text-xs text-gray-500 mt-2">
-            Include country code (e.g., +972 for Israel, +1 for US)
-          </p>
         </div>
 
         {/* Error */}
@@ -143,29 +157,28 @@ function AddAccount() {
         {pairingCode && status === 'waiting' && (
           <div className="mb-6 p-6 bg-wa-green/10 border border-wa-green/30 rounded-xl text-center">
             <p className="text-gray-400 mb-3">Enter this code in WhatsApp:</p>
-            <div className="text-4xl font-mono font-bold text-wa-green tracking-widest mb-4">
+            <div className="text-5xl font-mono font-bold text-wa-green tracking-[0.3em] mb-4">
               {pairingCode}
             </div>
-            <div className="text-sm text-gray-400 space-y-1">
-              <p>1. Open WhatsApp on your phone</p>
-              <p>2. Go to Settings → Linked Devices → Link a Device</p>
-              <p>3. Tap "Link with phone number instead"</p>
-              <p>4. Enter the code above</p>
+            <div className="text-sm text-gray-400 space-y-2 text-left max-w-md mx-auto">
+              <p className="flex gap-2"><span>1.</span> Open WhatsApp on your phone</p>
+              <p className="flex gap-2"><span>2.</span> Go to <strong>Settings → Linked Devices</strong></p>
+              <p className="flex gap-2"><span>3.</span> Tap <strong>"Link a Device"</strong></p>
+              <p className="flex gap-2"><span>4.</span> Tap <strong>"Link with phone number instead"</strong></p>
+              <p className="flex gap-2"><span>5.</span> Enter the code above</p>
             </div>
-            <button 
-              onClick={checkStatus}
-              className="mt-4 btn-secondary text-sm"
-            >
-              Check Status
-            </button>
+            <div className="mt-4 flex items-center justify-center gap-2 text-sm text-gray-500">
+              <div className="w-4 h-4 border-2 border-wa-green border-t-transparent rounded-full animate-spin"></div>
+              Waiting for pairing...
+            </div>
           </div>
         )}
 
         {/* Success */}
         {status === 'success' && (
           <div className="mb-6 p-6 bg-green-500/20 border border-green-500/30 rounded-xl text-center">
-            <div className="text-4xl mb-3">✅</div>
-            <p className="text-green-400 font-semibold">Account connected successfully!</p>
+            <div className="text-5xl mb-3">✅</div>
+            <p className="text-green-400 font-semibold text-xl">Account connected!</p>
             <p className="text-gray-400 text-sm mt-2">Redirecting to accounts...</p>
           </div>
         )}
@@ -194,35 +207,51 @@ function AddAccount() {
         )}
       </div>
 
+      {/* Warmup Info */}
+      <div className="card">
+        <h3 className="text-lg font-semibold text-white mb-4">🔥 Auto Warmup</h3>
+        <p className="text-gray-400 text-sm mb-4">
+          New accounts automatically enter a 3-day warmup period to prevent bans.
+        </p>
+        <div className="space-y-3">
+          {warmupStages.map((stage) => (
+            <div key={stage.day} className="flex items-center gap-3 text-sm">
+              <div className="w-8 h-8 rounded-full bg-orange-500/20 text-orange-400 flex items-center justify-center font-bold">
+                {stage.day}
+              </div>
+              <div>
+                <span className="text-white">{stage.description}</span>
+                <span className="text-gray-500 ml-2">({stage.maxMessages} msgs max)</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* Instructions */}
       <div className="card">
-        <h3 className="text-lg font-semibold text-white mb-4">📋 Instructions</h3>
-        <ol className="space-y-3 text-gray-400 text-sm">
-          <li className="flex gap-3">
-            <span className="text-wa-green font-bold">1.</span>
-            Select the worker that matches your phone's country for best proxy matching
+        <h3 className="text-lg font-semibold text-white mb-4">📋 Tips</h3>
+        <ul className="space-y-2 text-gray-400 text-sm">
+          <li className="flex gap-2">
+            <span className="text-wa-green">•</span>
+            Use the correct country worker for your phone number
           </li>
-          <li className="flex gap-3">
-            <span className="text-wa-green font-bold">2.</span>
-            Enter your full phone number with country code
+          <li className="flex gap-2">
+            <span className="text-wa-green">•</span>
+            Each worker uses a proxy from its country for anti-ban
           </li>
-          <li className="flex gap-3">
-            <span className="text-wa-green font-bold">3.</span>
-            Click "Get Pairing Code" and wait for the 8-digit code
+          <li className="flex gap-2">
+            <span className="text-wa-green">•</span>
+            Don't skip the warmup period - it protects your account
           </li>
-          <li className="flex gap-3">
-            <span className="text-wa-green font-bold">4.</span>
-            Open WhatsApp → Settings → Linked Devices → Link a Device
+          <li className="flex gap-2">
+            <span className="text-wa-green">•</span>
+            The pairing code expires in 60 seconds - be quick!
           </li>
-          <li className="flex gap-3">
-            <span className="text-wa-green font-bold">5.</span>
-            Tap "Link with phone number instead" and enter the code
-          </li>
-        </ol>
+        </ul>
       </div>
     </div>
   )
 }
 
 export default AddAccount
-

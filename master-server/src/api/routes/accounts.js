@@ -1,7 +1,15 @@
 import { Router } from 'express';
+import axios from 'axios';
 import { query } from '../../config/database.js';
 
 const router = Router();
+
+// Worker URLs configuration
+const WORKERS = [
+    { id: 'worker-1', url: process.env.WORKER_1_URL || 'http://worker-1:3001', country: 'US' },
+    { id: 'worker-2', url: process.env.WORKER_2_URL || 'http://worker-2:3001', country: 'IL' },
+    { id: 'worker-3', url: process.env.WORKER_3_URL || 'http://worker-3:3001', country: 'GB' },
+];
 
 // GET /api/accounts
 router.get('/', async (req, res, next) => {
@@ -80,6 +88,77 @@ router.delete('/:phone', async (req, res, next) => {
     try {
         await query('DELETE FROM accounts WHERE phone_number = $1', [req.params.phone]);
         res.status(204).send();
+    } catch (err) {
+        next(err);
+    }
+});
+
+// POST /api/accounts/warm-all - Trigger warmup for all eligible accounts
+router.post('/warm-all', async (req, res, next) => {
+    try {
+        const results = [];
+        
+        for (const worker of WORKERS) {
+            try {
+                // Get warmup status from each worker
+                const response = await axios.get(`${worker.url}/warmup/status`, { timeout: 5000 });
+                const accounts = response.data?.accounts || [];
+                
+                // Count accounts that need warmup
+                const needsWarmup = accounts.filter(a => !a.warmup_complete).length;
+                results.push({
+                    worker: worker.id,
+                    country: worker.country,
+                    totalAccounts: accounts.length,
+                    needsWarmup,
+                    status: 'ok'
+                });
+            } catch (err) {
+                results.push({
+                    worker: worker.id,
+                    country: worker.country,
+                    status: 'error',
+                    error: err.message
+                });
+            }
+        }
+
+        const totalNeedsWarmup = results.reduce((sum, r) => sum + (r.needsWarmup || 0), 0);
+        
+        res.json({
+            success: true,
+            message: `Warmup active for ${totalNeedsWarmup} accounts`,
+            workers: results
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// GET /api/accounts/warmup-status - Get warmup status from all workers
+router.get('/warmup-status', async (req, res, next) => {
+    try {
+        const results = [];
+        
+        for (const worker of WORKERS) {
+            try {
+                const response = await axios.get(`${worker.url}/warmup/status`, { timeout: 5000 });
+                results.push({
+                    worker: worker.id,
+                    country: worker.country,
+                    ...response.data
+                });
+            } catch (err) {
+                results.push({
+                    worker: worker.id,
+                    country: worker.country,
+                    accounts: [],
+                    error: err.message
+                });
+            }
+        }
+
+        res.json({ workers: results });
     } catch (err) {
         next(err);
     }

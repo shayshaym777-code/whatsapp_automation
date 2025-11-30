@@ -1,16 +1,17 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-
-const WORKERS = [
-  { id: 'worker-1', name: 'Worker 1', country: 'US', port: 3001 },
-  { id: 'worker-2', name: 'Worker 2', country: 'IL', port: 3002 },
-  { id: 'worker-3', name: 'Worker 3', country: 'GB', port: 3003 },
-]
+import { 
+  WORKERS, 
+  fetchAllAccounts, 
+  disconnectAccount,
+  getAccountWarmup,
+  cleanupAccounts
+} from '../api/workers'
 
 function Accounts() {
   const [accounts, setAccounts] = useState([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const [filter, setFilter] = useState('all') // all, connected, disconnected, warmup
 
   useEffect(() => {
     fetchAccounts()
@@ -19,49 +20,46 @@ function Accounts() {
   const fetchAccounts = async () => {
     setLoading(true)
     try {
-      const allAccounts = []
-      
-      for (const worker of WORKERS) {
-        try {
-          const res = await fetch(`http://localhost:${worker.port}/accounts`)
-          if (res.ok) {
-            const data = await res.json()
-            const workerAccounts = (data.accounts || []).map(acc => ({
-              ...acc,
-              worker: worker.name,
-              workerId: worker.id,
-              workerPort: worker.port,
-              workerCountry: worker.country
-            }))
-            allAccounts.push(...workerAccounts)
-          }
-        } catch (e) {
-          console.log(`Worker ${worker.id} not available`)
-        }
-      }
-      
+      const allAccounts = await fetchAllAccounts()
       setAccounts(allAccounts)
-      setLoading(false)
     } catch (err) {
-      setError(err.message)
+      console.error('Failed to fetch accounts:', err)
+    } finally {
       setLoading(false)
     }
   }
 
-  const disconnectAccount = async (account) => {
+  const handleDisconnect = async (account) => {
     if (!confirm(`Disconnect ${account.phone}?`)) return
     
     try {
-      const res = await fetch(`http://localhost:${account.workerPort}/accounts/${encodeURIComponent(account.phone)}/disconnect`, {
-        method: 'POST'
-      })
-      if (res.ok) {
-        fetchAccounts()
-      }
+      await disconnectAccount(account.phone, account.workerPort)
+      fetchAccounts()
     } catch (err) {
       alert('Failed to disconnect: ' + err.message)
     }
   }
+
+  const handleCleanup = async () => {
+    if (!confirm('Remove all non-logged-in accounts from all workers?')) return
+    
+    try {
+      await Promise.all(WORKERS.map(w => cleanupAccounts(w)))
+      alert('Cleanup complete!')
+      fetchAccounts()
+    } catch (err) {
+      alert('Cleanup failed: ' + err.message)
+    }
+  }
+
+  const filteredAccounts = accounts.filter(account => {
+    switch (filter) {
+      case 'connected': return account.connected && account.logged_in
+      case 'disconnected': return !account.connected || !account.logged_in
+      case 'warmup': return !account.warmup_complete
+      default: return true
+    }
+  })
 
   if (loading) {
     return (
@@ -74,54 +72,83 @@ function Accounts() {
   return (
     <div className="space-y-8 animate-fade-in">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
           <h2 className="text-3xl font-bold text-white mb-2">Accounts</h2>
           <p className="text-gray-400">Manage connected WhatsApp accounts</p>
         </div>
-        <Link to="/accounts/add" className="btn-primary flex items-center gap-2">
-          <span>+</span>
-          Add Account
-        </Link>
-      </div>
-
-      {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="card text-center">
-          <div className="text-3xl font-bold text-white">{accounts.length}</div>
-          <div className="text-gray-400 text-sm">Total Accounts</div>
-        </div>
-        <div className="card text-center">
-          <div className="text-3xl font-bold text-green-400">
-            {accounts.filter(a => a.connected).length}
-          </div>
-          <div className="text-gray-400 text-sm">Connected</div>
-        </div>
-        <div className="card text-center">
-          <div className="text-3xl font-bold text-yellow-400">
-            {accounts.filter(a => !a.connected).length}
-          </div>
-          <div className="text-gray-400 text-sm">Disconnected</div>
-        </div>
-      </div>
-
-      {/* Accounts List */}
-      {accounts.length === 0 ? (
-        <div className="card text-center py-12">
-          <div className="text-6xl mb-4">📱</div>
-          <h3 className="text-xl font-semibold text-white mb-2">No accounts connected</h3>
-          <p className="text-gray-400 mb-6">Add your first WhatsApp account to get started</p>
-          <Link to="/accounts/add" className="btn-primary inline-block">
+        <div className="flex gap-3">
+          <button onClick={handleCleanup} className="btn-secondary text-sm">
+            🧹 Cleanup
+          </button>
+          <Link to="/accounts/add" className="btn-primary flex items-center gap-2">
+            <span>+</span>
             Add Account
           </Link>
         </div>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <button 
+          onClick={() => setFilter('all')}
+          className={`card text-center cursor-pointer transition-all ${filter === 'all' ? 'border-wa-green' : ''}`}
+        >
+          <div className="text-3xl font-bold text-white">{accounts.length}</div>
+          <div className="text-gray-400 text-sm">Total</div>
+        </button>
+        <button 
+          onClick={() => setFilter('connected')}
+          className={`card text-center cursor-pointer transition-all ${filter === 'connected' ? 'border-wa-green' : ''}`}
+        >
+          <div className="text-3xl font-bold text-green-400">
+            {accounts.filter(a => a.connected && a.logged_in).length}
+          </div>
+          <div className="text-gray-400 text-sm">Connected</div>
+        </button>
+        <button 
+          onClick={() => setFilter('disconnected')}
+          className={`card text-center cursor-pointer transition-all ${filter === 'disconnected' ? 'border-wa-green' : ''}`}
+        >
+          <div className="text-3xl font-bold text-yellow-400">
+            {accounts.filter(a => !a.connected || !a.logged_in).length}
+          </div>
+          <div className="text-gray-400 text-sm">Disconnected</div>
+        </button>
+        <button 
+          onClick={() => setFilter('warmup')}
+          className={`card text-center cursor-pointer transition-all ${filter === 'warmup' ? 'border-wa-green' : ''}`}
+        >
+          <div className="text-3xl font-bold text-orange-400">
+            {accounts.filter(a => !a.warmup_complete).length}
+          </div>
+          <div className="text-gray-400 text-sm">In Warmup</div>
+        </button>
+      </div>
+
+      {/* Accounts List */}
+      {filteredAccounts.length === 0 ? (
+        <div className="card text-center py-12">
+          <div className="text-6xl mb-4">📱</div>
+          <h3 className="text-xl font-semibold text-white mb-2">
+            {filter === 'all' ? 'No accounts connected' : `No ${filter} accounts`}
+          </h3>
+          <p className="text-gray-400 mb-6">
+            {filter === 'all' ? 'Add your first WhatsApp account to get started' : 'Try a different filter'}
+          </p>
+          {filter === 'all' && (
+            <Link to="/accounts/add" className="btn-primary inline-block">
+              Add Account
+            </Link>
+          )}
+        </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {accounts.map((account, index) => (
+          {filteredAccounts.map((account, index) => (
             <AccountCard 
               key={account.phone || index} 
               account={account} 
-              onDisconnect={() => disconnectAccount(account)}
+              onDisconnect={() => handleDisconnect(account)}
             />
           ))}
         </div>
@@ -141,15 +168,16 @@ function AccountCard({ account, onDisconnect }) {
   const countryFlags = { US: '🇺🇸', IL: '🇮🇱', GB: '🇬🇧' }
   const isConnected = account.connected
   const isLoggedIn = account.logged_in
+  const isActive = isConnected && isLoggedIn
 
   return (
     <div className={`card transition-all duration-300 ${
-      isConnected ? 'border-green-500/30' : 'border-yellow-500/30'
+      isActive ? 'border-green-500/30' : 'border-yellow-500/30'
     }`}>
       <div className="flex items-start justify-between mb-4">
         <div className="flex items-center gap-3">
           <div className={`w-12 h-12 rounded-full flex items-center justify-center text-xl ${
-            isConnected ? 'bg-green-500/20' : 'bg-yellow-500/20'
+            isActive ? 'bg-green-500/20' : 'bg-yellow-500/20'
           }`}>
             {countryFlags[account.workerCountry] || '📱'}
           </div>
@@ -158,33 +186,52 @@ function AccountCard({ account, onDisconnect }) {
             <p className="text-xs text-gray-500">{account.worker}</p>
           </div>
         </div>
-        <span className={`badge ${isConnected ? 'badge-success' : 'badge-warning'}`}>
-          {isConnected ? 'Connected' : 'Disconnected'}
+        <span className={`badge ${isActive ? 'badge-success' : 'badge-warning'}`}>
+          {isActive ? 'Active' : 'Inactive'}
         </span>
       </div>
 
       <div className="space-y-2 mb-4">
         <div className="flex justify-between text-sm">
+          <span className="text-gray-400">Connected</span>
+          <span className={isConnected ? 'text-green-400' : 'text-red-400'}>
+            {isConnected ? '✓ Yes' : '✗ No'}
+          </span>
+        </div>
+        <div className="flex justify-between text-sm">
           <span className="text-gray-400">Logged In</span>
           <span className={isLoggedIn ? 'text-green-400' : 'text-red-400'}>
-            {isLoggedIn ? 'Yes' : 'No'}
+            {isLoggedIn ? '✓ Yes' : '✗ No'}
+          </span>
+        </div>
+        <div className="flex justify-between text-sm">
+          <span className="text-gray-400">Warmup</span>
+          <span className={account.warmup_complete ? 'text-green-400' : 'text-orange-400'}>
+            {account.warmup_complete ? '✓ Complete' : '🔥 In Progress'}
           </span>
         </div>
         <div className="flex justify-between text-sm">
           <span className="text-gray-400">Device ID</span>
           <span className="text-gray-300 font-mono text-xs">
-            {account.device_id?.slice(0, 12) || 'N/A'}...
+            {account.device_id?.slice(0, 8) || 'N/A'}...
           </span>
         </div>
       </div>
 
       <div className="flex gap-2">
+        <Link 
+          to={`/send?from=${encodeURIComponent(account.phone)}`}
+          className="flex-1 py-2 px-3 bg-wa-green/20 text-wa-green rounded-lg text-sm font-medium
+                     hover:bg-wa-green/30 transition-colors text-center"
+        >
+          Send Message
+        </Link>
         <button 
           onClick={onDisconnect}
-          className="flex-1 py-2 px-3 bg-red-500/20 text-red-400 rounded-lg text-sm font-medium
+          className="py-2 px-3 bg-red-500/20 text-red-400 rounded-lg text-sm font-medium
                      hover:bg-red-500/30 transition-colors"
         >
-          Disconnect
+          ✗
         </button>
       </div>
     </div>
@@ -192,4 +239,3 @@ function AccountCard({ account, onDisconnect }) {
 }
 
 export default Accounts
-
