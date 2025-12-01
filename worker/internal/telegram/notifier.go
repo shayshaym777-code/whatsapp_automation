@@ -144,6 +144,37 @@ func (n *Notifier) AlertReconnectFailed(phone, worker string) {
 	}
 }
 
+// AlertAllSessionsDown sends alert when all 4 sessions for a phone are down (v7.0)
+func (n *Notifier) AlertAllSessionsDown(phone string) {
+	msg := fmt.Sprintf(`🔴 <b>כל ה-SESSIONS נפלו!</b>
+
+📱 Phone: %s
+⚠️ צריך לסרוק QR מחדש!
+⏰ Time: %s
+
+<i>כל 4 ה-sessions לא זמינים. נא לסרוק QR חדש.</i>`, phone, time.Now().Format("2006-01-02 15:04:05"))
+
+	if err := n.SendAlert(msg); err != nil {
+		log.Printf("[Telegram] Failed to send all sessions down alert: %v", err)
+	}
+}
+
+// AlertSessionFailover sends notification when session switches to backup (v7.0)
+func (n *Notifier) AlertSessionFailover(phone string, fromSession, toSession int) {
+	msg := fmt.Sprintf(`🔄 <b>SESSION FAILOVER</b>
+
+📱 Phone: %s
+📤 From Session: %d
+📥 To Session: %d
+⏰ Time: %s
+
+<i>עבר אוטומטית ל-session גיבוי.</i>`, phone, fromSession, toSession, time.Now().Format("2006-01-02 15:04:05"))
+
+	if err := n.SendAlert(msg); err != nil {
+		log.Printf("[Telegram] Failed to send session failover alert: %v", err)
+	}
+}
+
 // AlertNewAccountConnected sends new account connection notification
 func (n *Notifier) AlertNewAccountConnected(phone, worker string, isNew bool) {
 	status := "Ready to send"
@@ -207,3 +238,10 @@ func AlertReconnectFailed(phone, worker string) {
 	GetNotifier().AlertReconnectFailed(phone, worker)
 }
 
+func AlertAllSessionsDown(phone string) {
+	GetNotifier().AlertAllSessionsDown(phone)
+}
+
+func AlertSessionFailover(phone string, fromSession, toSession int) {
+	GetNotifier().AlertSessionFailover(phone, fromSession, toSession)
+}

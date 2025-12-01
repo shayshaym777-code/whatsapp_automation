@@ -756,12 +756,10 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 					log.Printf("[%s] Will attempt reconnect in %v", p, delay)
 				}
 				time.Sleep(delay)
-				
+
 				// Try reconnect
-				err := m.attemptSmartReconnect(p)
-				if err == nil {
-					telegram.AlertReconnected(p, workerID)
-				}
+				m.attemptSmartReconnect(p)
+				// Note: AlertReconnected is called inside attemptSmartReconnect on success
 			}(phone, acc.IsUnstable, acc.DisconnectCount, m.WorkerID)
 		}
 
@@ -882,15 +880,6 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 		m.mu.Unlock()
 		// Handle incoming message
 		m.handleIncomingMessage(phone, v)
-
-	case *events.Receipt:
-		m.mu.Unlock()
-		// Handle delivery/read receipts
-		if v.Type == types.ReceiptTypeDelivered {
-			log.Printf("[%s] ✅✅ Message delivered to %s", phone, v.Chat.User)
-		} else if v.Type == types.ReceiptTypeRead {
-			log.Printf("[%s] ✅✅🔵 Message read by %s", phone, v.Chat.User)
-		}
 
 	default:
 		m.mu.Unlock()
@@ -1187,9 +1176,9 @@ func (m *ClientManager) resetCountersIfNeeded(acc *AccountClient) {
 // adult (15+ days): 100/day - can send campaigns
 func getStageLimits(stage string) StageLimits {
 	limits := map[string]StageLimits{
-		"new_born": {MaxDay: 5, MaxHour: 5},    // Warmup only!
-		"baby":     {MaxDay: 20, MaxHour: 20},  // Can send campaigns
-		"teen":     {MaxDay: 50, MaxHour: 50},  // Can send campaigns
+		"new_born": {MaxDay: 5, MaxHour: 5},     // Warmup only!
+		"baby":     {MaxDay: 20, MaxHour: 20},   // Can send campaigns
+		"teen":     {MaxDay: 50, MaxHour: 50},   // Can send campaigns
 		"adult":    {MaxDay: 100, MaxHour: 100}, // Full capacity
 	}
 
@@ -1971,61 +1960,24 @@ func (m *ClientManager) GetConnectionStatus() []map[string]interface{} {
 	return result
 }
 
-// GetAccountsCapacity returns sending capacity for all accounts
-func (m *ClientManager) GetAccountsCapacity() []map[string]interface{} {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	result := make([]map[string]interface{}, 0, len(m.accounts))
-	for phone, acc := range m.accounts {
-		acc.mu.RLock()
-
-		// Calculate available capacity
-		dailyLimit := 0
-		available := 0
-
-		if acc.IsInWarmup {
-			// Warmup accounts have daily limits based on stage
-			dailyLimit = getDailyLimitForStage(acc.WarmupStage)
-			available = dailyLimit - acc.TotalMsgToday
-			if available < 0 {
-				available = 0
-			}
-		} else {
-			// Veteran accounts have no daily limit
-			dailyLimit = -1  // -1 means unlimited
-			available = 9999 // Effectively unlimited
-		}
-
-		result = append(result, map[string]interface{}{
-			"phone":       phone,
-			"connected":   acc.Connected && acc.LoggedIn,
-			"in_warmup":   acc.IsInWarmup,
-			"stage":       acc.WarmupStage,
-			"daily_limit": dailyLimit,
-			"sent_today":  acc.TotalMsgToday,
-			"available":   available,
-		})
-		acc.mu.RUnlock()
-	}
-	return result
-}
-
 // getDailyLimitForStage returns daily message limit based on warmup stage
+// v7.0 updated stages
 func getDailyLimitForStage(stage string) int {
 	switch stage {
-	case "newborn":
-		return 10
-	case "infant":
-		return 25
-	case "child":
+	case "WARMING":
+		return 5
+	case "Baby":
+		return 15
+	case "Toddler":
+		return 30
+	case "Teen":
 		return 50
-	case "teen":
+	case "Adult":
 		return 100
-	case "adult":
+	case "Veteran":
 		return 200
 	default:
-		return 50 // Default
+		return 100 // Default to Adult
 	}
 }
 
@@ -2240,4 +2192,64 @@ func (m *ClientManager) NotifyMasterWarmupMessage(fromPhone, toPhone string) {
 		return
 	}
 	defer resp.Body.Close()
+}
+
+// SetAccountIsNew sets the is_new flag for an account (v7.0)
+// If is_new is true, account enters 3-day warmup period
+func (m *ClientManager) SetAccountIsNew(phone string, isNew bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	acc, exists := m.accounts[phone]
+	if !exists {
+		return
+	}
+
+	acc.mu.Lock()
+	defer acc.mu.Unlock()
+
+	acc.IsNew = isNew
+	if isNew {
+		acc.WarmupStage = "WARMING"
+		acc.IsInWarmup = true
+		acc.WarmupComplete = false
+		acc.CreatedAt = time.Now() // Reset creation date for warmup calculation
+		log.Printf("[%s] Account set to NEW - 3-day warmup started", phone)
+	} else {
+		acc.WarmupStage = "Adult"
+		acc.IsInWarmup = false
+		acc.WarmupComplete = true
+		log.Printf("[%s] Account set to NOT NEW - ready for campaigns", phone)
+	}
+
+	// Save metadata
+	go m.saveAccountMeta(phone, acc)
+}
+
+// GetAccountStageInfo returns stage information for an account (v7.0)
+func (m *ClientManager) GetAccountStageInfo(phone string) map[string]interface{} {
+	m.mu.RLock()
+	acc, exists := m.accounts[phone]
+	m.mu.RUnlock()
+
+	if !exists {
+		return nil
+	}
+
+	acc.mu.RLock()
+	defer acc.mu.RUnlock()
+
+	stage := GetStageForAccount(acc.CreatedAt, acc.IsNew)
+
+	return map[string]interface{}{
+		"phone":       phone,
+		"stage":       stage.Name,
+		"power":       stage.Power,
+		"daily_limit": stage.DailyLimit,
+		"can_campaign": stage.CanCampaign,
+		"is_new":      acc.IsNew,
+		"days_active": int(time.Since(acc.CreatedAt).Hours() / 24),
+		"messages_today": acc.TotalMsgToday,
+		"remaining":   stage.DailyLimit - acc.TotalMsgToday,
+	}
 }

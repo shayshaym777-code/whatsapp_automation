@@ -7,15 +7,46 @@ const router = Router();
 // Worker URLs configuration
 const WORKERS = [
     { id: 'worker-1', url: process.env.WORKER_1_URL || 'http://worker-1:3001', country: 'US' },
-    { id: 'worker-2', url: process.env.WORKER_2_URL || 'http://worker-2:3001', country: 'US' },
-    { id: 'worker-3', url: process.env.WORKER_3_URL || 'http://worker-3:3001', country: 'US' },
+    { id: 'worker-2', url: process.env.WORKER_2_URL || 'http://worker-2:3001', country: 'IL' },
+    { id: 'worker-3', url: process.env.WORKER_3_URL || 'http://worker-3:3001', country: 'GB' },
+    { id: 'worker-4', url: process.env.WORKER_4_URL || 'http://worker-4:3001', country: 'US' },
 ];
 
-// GET /api/accounts
+// v7.0 Stage configuration
+const STAGES = {
+    'WARMING': { minDays: 1, maxDays: 3, dailyLimit: 5, power: 0 },
+    'Baby': { minDays: 4, maxDays: 7, dailyLimit: 15, power: 15 },
+    'Toddler': { minDays: 8, maxDays: 14, dailyLimit: 30, power: 30 },
+    'Teen': { minDays: 15, maxDays: 30, dailyLimit: 50, power: 50 },
+    'Adult': { minDays: 31, maxDays: 60, dailyLimit: 100, power: 100 },
+    'Veteran': { minDays: 61, maxDays: 9999, dailyLimit: 200, power: 200 },
+};
+
+// GET /api/accounts - v7.0 with sessions count
 router.get('/', async (req, res, next) => {
     try {
-        const result = await query('SELECT * FROM accounts ORDER BY created_at DESC LIMIT 200');
-        res.json(result.rows);
+        const result = await query(`
+            SELECT a.*,
+                   (SELECT COUNT(*) FROM sessions s WHERE s.phone = a.phone) as total_sessions,
+                   (SELECT COUNT(*) FROM sessions s WHERE s.phone = a.phone AND s.status = 'CONNECTED') as active_sessions,
+                   (SELECT session_number FROM sessions s WHERE s.phone = a.phone AND s.status = 'CONNECTED' ORDER BY session_number LIMIT 1) as active_session
+            FROM accounts a
+            ORDER BY a.created_at DESC LIMIT 200
+        `);
+        
+        // Add stage info
+        const accounts = result.rows.map(acc => {
+            const stage = STAGES[acc.stage] || STAGES['Adult'];
+            return {
+                ...acc,
+                sessions: acc.total_sessions || 0,
+                active_session: acc.active_session || null,
+                max_per_day: stage.dailyLimit,
+                power: stage.power
+            };
+        });
+        
+        res.json({ accounts });
     } catch (err) {
         next(err);
     }
@@ -86,8 +117,96 @@ router.put('/:phone', async (req, res, next) => {
 // DELETE /api/accounts/:phone
 router.delete('/:phone', async (req, res, next) => {
     try {
-        await query('DELETE FROM accounts WHERE phone_number = $1', [req.params.phone]);
+        await query('DELETE FROM accounts WHERE phone = $1', [req.params.phone]);
         res.status(204).send();
+    } catch (err) {
+        next(err);
+    }
+});
+
+// POST /api/accounts/:phone/mark-new - v7.0: Mark account as new (triggers 3-day warmup)
+router.post('/:phone/mark-new', async (req, res, next) => {
+    try {
+        const phone = req.params.phone;
+
+        // Update account to is_new = true and stage = WARMING
+        const result = await query(`
+            UPDATE accounts 
+            SET is_new = TRUE, 
+                stage = 'WARMING',
+                power = 0,
+                max_per_day = 5,
+                updated_at = NOW()
+            WHERE phone = $1
+            RETURNING *
+        `, [phone]);
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Account not found' });
+        }
+
+        console.log(`[Accounts] Account ${phone} marked as NEW - entering 3-day warmup`);
+
+        res.json({
+            success: true,
+            message: 'Account marked as new - 3 day warmup started',
+            account: result.rows[0]
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// POST /api/accounts/:phone/unmark-new - v7.0: Remove new flag (skip warmup)
+router.post('/:phone/unmark-new', async (req, res, next) => {
+    try {
+        const phone = req.params.phone;
+
+        // Update account to is_new = false and stage = Adult
+        const result = await query(`
+            UPDATE accounts 
+            SET is_new = FALSE, 
+                stage = 'Adult',
+                power = 100,
+                max_per_day = 100,
+                updated_at = NOW()
+            WHERE phone = $1
+            RETURNING *
+        `, [phone]);
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Account not found' });
+        }
+
+        console.log(`[Accounts] Account ${phone} unmarked as new - ready for campaigns`);
+
+        res.json({
+            success: true,
+            message: 'Account warmup skipped - ready for campaigns',
+            account: result.rows[0]
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// GET /api/accounts/:phone/sessions - v7.0: Get all sessions for a phone
+router.get('/:phone/sessions', async (req, res, next) => {
+    try {
+        const phone = req.params.phone;
+
+        const result = await query(`
+            SELECT * FROM sessions WHERE phone = $1 ORDER BY session_number
+        `, [phone]);
+
+        const connected = result.rows.filter(s => s.status === 'CONNECTED').length;
+
+        res.json({
+            phone,
+            total_sessions: result.rows.length,
+            connected_sessions: connected,
+            sessions: result.rows
+        });
     } catch (err) {
         next(err);
     }

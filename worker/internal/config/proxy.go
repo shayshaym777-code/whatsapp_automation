@@ -30,12 +30,12 @@ type ProxyUsage struct {
 
 // ProxyPool manages multiple proxies with rotation every 10-20 messages
 type ProxyPool struct {
-	proxies        []*ProxyConfig
-	usage          map[int]*ProxyUsage // Track usage per proxy index
-	currentIndex   int
-	rotateAfter    int           // Messages before rotation (10-20)
-	cooldownHours  int           // Hours before reusing same proxy
-	mu             sync.Mutex
+	proxies       []*ProxyConfig
+	usage         map[int]*ProxyUsage // Track usage per proxy index
+	currentIndex  int
+	rotateAfter   int // Messages before rotation (10-20)
+	cooldownHours int // Hours before reusing same proxy
+	mu            sync.Mutex
 }
 
 // LoadProxyConfig loads proxy configuration from environment variables
@@ -112,7 +112,7 @@ func LoadProxyPool() *ProxyPool {
 	}
 
 	if len(pool.proxies) > 0 {
-		log.Printf("[ProxyPool] Loaded %d proxies (rotate every %d messages, 24h cooldown)", 
+		log.Printf("[ProxyPool] Loaded %d proxies (rotate every %d messages, 24h cooldown)",
 			len(pool.proxies), pool.rotateAfter)
 	}
 

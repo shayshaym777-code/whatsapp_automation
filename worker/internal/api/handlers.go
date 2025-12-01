@@ -358,13 +358,15 @@ func (s *Server) handleAccountsConnect(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// PairRequest represents a pairing code connection request
+// PairRequest represents a pairing code connection request (v7.0: added is_new flag)
 type PairRequest struct {
-	Phone string `json:"phone"`
+	Phone        string `json:"phone"`
+	IsNew        bool   `json:"is_new"`        // v7.0: If true, account enters 3-day warmup
+	SessionNumber int   `json:"session_number"` // v7.0: Session number 1-4 (default 1)
 }
 
 // POST /accounts/pair - Connect a WhatsApp account using pairing code (faster than QR)
-// This method is recommended for Docker environments
+// v7.0: Supports is_new flag for warmup and session_number for multi-session
 func (s *Server) handleAccountsPair(w http.ResponseWriter, r *http.Request) {
 	var req PairRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -377,6 +379,11 @@ func (s *Server) handleAccountsPair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Default to session 1 if not specified
+	if req.SessionNumber < 1 || req.SessionNumber > 4 {
+		req.SessionNumber = 1
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
@@ -387,16 +394,31 @@ func (s *Server) handleAccountsPair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[PAIR] Account %s status: %s", req.Phone, result.Status)
+	// v7.0: Set is_new flag if specified
+	if req.IsNew {
+		s.client.SetAccountIsNew(req.Phone, true)
+		log.Printf("[PAIR] Account %s marked as NEW - will enter 3-day warmup", req.Phone)
+	}
+
+	log.Printf("[PAIR] Account %s status: %s (session %d, is_new: %v)", 
+		req.Phone, result.Status, req.SessionNumber, req.IsNew)
+
+	stage := "Adult"
+	if req.IsNew {
+		stage = "WARMING"
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success":      true,
-		"status":       result.Status,
-		"phone":        result.Phone,
-		"pairing_code": result.PairingCode,
-		"logged_in":    result.LoggedIn,
-		"device_id":    result.DeviceID,
-		"instructions": "Open WhatsApp on your phone > Settings > Linked Devices > Link a Device > Link with phone number instead > Enter the pairing code",
+		"success":        true,
+		"status":         result.Status,
+		"phone":          result.Phone,
+		"pairing_code":   result.PairingCode,
+		"logged_in":      result.LoggedIn,
+		"device_id":      result.DeviceID,
+		"is_new":         req.IsNew,
+		"session_number": req.SessionNumber,
+		"stage":          stage,
+		"instructions":   "Open WhatsApp on your phone > Settings > Linked Devices > Link a Device > Link with phone number instead > Enter the pairing code",
 	})
 }
 
@@ -921,43 +943,3 @@ func (s *Server) handleCanSend(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// POST /accounts/{phone}/warmup - Set warmup mode on/off for an account
-// Body: {"warmup": true/false}
-// warmup=true: new account with daily limits
-// warmup=false: veteran account, no daily limits (only rate limiting)
-func (s *Server) handleSetWarmup(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	phone := vars["phone"]
-
-	if phone == "" {
-		writeError(w, http.StatusBadRequest, "phone is required")
-		return
-	}
-
-	var req struct {
-		Warmup bool `json:"warmup"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid request body")
-		return
-	}
-
-	err := s.client.SetAccountWarmup(phone, req.Warmup)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "Account not found: "+phone)
-		return
-	}
-
-	status := "veteran (no daily limits)"
-	if req.Warmup {
-		status = "warmup (daily limits apply)"
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-		"phone":   phone,
-		"warmup":  req.Warmup,
-		"message": "Account " + phone + " set to " + status,
-	})
-}
