@@ -736,7 +736,7 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 				// Random delay to avoid all accounts reconnecting at once
 				delay := time.Duration(rand.Intn(10)+5) * time.Second
 				time.Sleep(delay)
-				
+
 				m.mu.RLock()
 				a, ok := m.accounts[p]
 				m.mu.RUnlock()
@@ -1805,7 +1805,7 @@ func (m *ClientManager) GetConnectionStatus() []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(m.accounts))
 	for phone, acc := range m.accounts {
 		acc.mu.RLock()
-		
+
 		// Check actual connection status from whatsmeow client
 		wsConnected := false
 		wsLoggedIn := false
@@ -1816,7 +1816,7 @@ func (m *ClientManager) GetConnectionStatus() []map[string]interface{} {
 
 		status := "unknown"
 		reconnecting := false
-		
+
 		if wsConnected && wsLoggedIn {
 			status = "connected"
 		} else if acc.LoggedIn && !wsConnected {
@@ -1830,15 +1830,15 @@ func (m *ClientManager) GetConnectionStatus() []map[string]interface{} {
 		}
 
 		result = append(result, map[string]interface{}{
-			"phone":              phone,
-			"status":             status,
-			"connected":          wsConnected,
-			"logged_in":          wsLoggedIn,
-			"reconnecting":       reconnecting,
-			"last_error":         acc.LastError,
-			"consecutive_fails":  acc.ConsecutiveFailures,
-			"banned_until":       acc.BannedUntil.Format(time.RFC3339),
-			"is_banned":          time.Now().Before(acc.BannedUntil),
+			"phone":             phone,
+			"status":            status,
+			"connected":         wsConnected,
+			"logged_in":         wsLoggedIn,
+			"reconnecting":      reconnecting,
+			"last_error":        acc.LastError,
+			"consecutive_fails": acc.ConsecutiveFailures,
+			"banned_until":      acc.BannedUntil.Format(time.RFC3339),
+			"is_banned":         time.Now().Before(acc.BannedUntil),
 		})
 		acc.mu.RUnlock()
 	}

@@ -34,6 +34,76 @@ var keepAliveMessages = []string{
 	"hi",
 }
 
+// External phone numbers for keep alive - NOT our accounts!
+// These are real numbers to send keep alive to (looks more natural)
+var keepAliveTargetPhones = []string{
+	"972557042301",
+	"972502492495",
+	"972535251110",
+	"972508572614",
+	"972506595779",
+	"972547449724",
+	"972587959957",
+	"972506461221",
+	"972524493395",
+	"972525204958",
+	"972536200412",
+	"972523963939",
+	"972503801200",
+	"972504885005",
+	"972504441987",
+	"972509212327",
+	"972525904818",
+	"972545688632",
+	"972544878211",
+	"972548352757",
+	"972534325821",
+	"972526635197",
+	"972525000963",
+	"972585538805",
+	"972526161676",
+	"972546882912",
+	"972526341867",
+	"972538222661",
+	"972544437792",
+	"972505438438",
+	"972542548337",
+	"972546109493",
+	"972586272776",
+	"972528206358",
+	"972548836499",
+	"972529382987",
+	"972537262058",
+	"972523951114",
+	"972584449967",
+	"972533443306",
+	"972544465781",
+	"972508923226",
+	"972522000065",
+	"972585200032",
+	"972542677772",
+	"972549198510",
+	"972502281601",
+	"972547995532",
+	"972556886913",
+	"972502170020",
+	"972558817372",
+	"972559695072",
+	"972522420357",
+	"972547174377",
+	"972528876633",
+	"972527338887",
+	"972556668936",
+	"972509748484",
+	"972523663774",
+	"972533365999",
+	"972509344850",
+	"972538248114",
+	"972525116467",
+	"972507330647",
+	"972509456568",
+}
+
 // AccountHealthStatus represents the health state of an account
 type AccountHealthStatus string
 
@@ -108,32 +178,32 @@ func (m *ClientManager) StopKeepAlive() {
 	}
 }
 
-// sendKeepAliveMessages sends a keep alive message from each account to another
+// sendKeepAliveMessages sends a keep alive message from each account to external numbers
+// We send to external numbers (not our accounts) to look more natural
 func (m *ClientManager) sendKeepAliveMessages() {
 	activeAccounts := m.GetActiveAccounts()
 
-	if len(activeAccounts) < 2 {
-		log.Println("[KeepAlive] Need at least 2 accounts for keep alive")
+	if len(activeAccounts) == 0 {
+		log.Println("[KeepAlive] No active accounts for keep alive")
 		return
 	}
 
-	log.Printf("[KeepAlive] Sending keep alive for %d accounts", len(activeAccounts))
+	if len(keepAliveTargetPhones) == 0 {
+		log.Println("[KeepAlive] No target phones configured for keep alive")
+		return
+	}
 
-	for i, sender := range activeAccounts {
-		// Pick a random receiver (not self)
-		receiverIdx := (i + 1 + rand.Intn(len(activeAccounts)-1)) % len(activeAccounts)
-		receiver := activeAccounts[receiverIdx]
+	log.Printf("[KeepAlive] Sending keep alive for %d accounts to external numbers", len(activeAccounts))
 
-		if receiver.Phone == sender.Phone {
-			receiverIdx = (receiverIdx + 1) % len(activeAccounts)
-			receiver = activeAccounts[receiverIdx]
-		}
+	for _, sender := range activeAccounts {
+		// Pick a random external target phone (not our accounts!)
+		targetPhone := keepAliveTargetPhones[rand.Intn(len(keepAliveTargetPhones))]
 
 		// Pick random message
 		message := keepAliveMessages[rand.Intn(len(keepAliveMessages))]
 
-		// Send keep alive
-		err := m.sendKeepAliveMessage(sender, receiver.Phone, message)
+		// Send keep alive to external number
+		err := m.sendKeepAliveMessage(sender, targetPhone, message)
 
 		// Update health status
 		health := m.getOrCreateHealth(sender.Phone)
@@ -156,7 +226,7 @@ func (m *ClientManager) sendKeepAliveMessages() {
 			health.LastMessageSent = time.Now()
 			health.ConsecutiveFailures = 0
 			health.LastError = ""
-			log.Printf("[KeepAlive] ✅ Keep alive sent: %s -> %s", sender.Phone, receiver.Phone)
+			log.Printf("[KeepAlive] ✅ Keep alive sent: %s -> %s (external)", sender.Phone, targetPhone)
 		}
 
 		// Delay between accounts (30-90 seconds)
