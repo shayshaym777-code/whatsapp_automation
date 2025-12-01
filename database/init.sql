@@ -21,14 +21,15 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- ============================================
 CREATE TABLE IF NOT EXISTS accounts (
     phone VARCHAR(20) PRIMARY KEY,
-    country VARCHAR(2),                     -- US, IL, GB
-    proxy_id VARCHAR(50),                   -- Assigned sticky proxy
+    country VARCHAR(2),
+    -- US, IL, GB
+    proxy_id VARCHAR(50),
+    -- Assigned sticky proxy
     messages_today INTEGER DEFAULT 0,
     last_message_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
-
 CREATE INDEX IF NOT EXISTS idx_accounts_country ON accounts(country);
 -- ============================================
 -- SESSIONS TABLE (v8.0 - 4 backups per phone)

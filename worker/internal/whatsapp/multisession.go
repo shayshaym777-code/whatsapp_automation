@@ -206,13 +206,13 @@ func (ps *PhoneMultiSession) GetStatus() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"phone":             ps.Phone,
-		"status":            status,
-		"active_session":    ps.ActiveSession,
-		"sessions":          sessions,
-		"connected_count":   connected,
-		"total_sessions":    total,
-		"sessions_display":  fmt.Sprintf("%d/%d", connected, total),
+		"phone":            ps.Phone,
+		"status":           status,
+		"active_session":   ps.ActiveSession,
+		"sessions":         sessions,
+		"connected_count":  connected,
+		"total_sessions":   total,
+		"sessions_display": fmt.Sprintf("%d/%d", connected, total),
 	}
 }
 
