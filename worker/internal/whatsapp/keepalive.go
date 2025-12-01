@@ -354,18 +354,18 @@ func (m *ClientManager) performKeepAliveTouch(acc *AccountClient) {
 	switch activity {
 	case "presence":
 		// Just mark as online
-		_ = acc.Client.SendPresence(types.PresenceAvailable)
+		_ = acc.Client.SendPresence(ctx, types.PresenceAvailable)
 		time.Sleep(time.Duration(2+rand.Intn(3)) * time.Second)
-		_ = acc.Client.SendPresence(types.PresenceUnavailable)
+		_ = acc.Client.SendPresence(ctx, types.PresenceUnavailable)
 		
 	case "typing":
 		// Start typing in a random chat then stop
 		if len(keepAliveTargetPhones) > 0 {
 			targetPhone := keepAliveTargetPhones[rand.Intn(len(keepAliveTargetPhones))]
 			jid := types.NewJID(targetPhone, types.DefaultUserServer)
-			_ = acc.Client.SendChatPresence(jid, types.ChatPresenceComposing, types.ChatPresenceMediaText)
+			_ = acc.Client.SendChatPresence(ctx, jid, types.ChatPresenceComposing, types.ChatPresenceMediaText)
 			time.Sleep(time.Duration(1+rand.Intn(2)) * time.Second)
-			_ = acc.Client.SendChatPresence(jid, types.ChatPresencePaused, types.ChatPresenceMediaText)
+			_ = acc.Client.SendChatPresence(ctx, jid, types.ChatPresencePaused, types.ChatPresenceMediaText)
 		}
 		
 	case "read":
@@ -657,7 +657,8 @@ func (m *ClientManager) checkTempBlockedAccounts() {
 		}
 		
 		// Try to send presence (lightweight check)
-		err := acc.Client.SendPresence(types.PresenceAvailable)
+		ctx := context.Background()
+		err := acc.Client.SendPresence(ctx, types.PresenceAvailable)
 		if err != nil {
 			if isTempBlockedError(err) || isBlockedError(err) {
 				// Still restricted, wait another hour
@@ -676,7 +677,7 @@ func (m *ClientManager) checkTempBlockedAccounts() {
 			log.Printf("[Restricted] ✅ Account %s restriction lifted! Back to normal.", phone)
 			
 			// Send offline presence
-			_ = acc.Client.SendPresence(types.PresenceUnavailable)
+			_ = acc.Client.SendPresence(ctx, types.PresenceUnavailable)
 		}
 		
 		health.LastBlockCheck = time.Now()
@@ -708,9 +709,10 @@ func (m *ClientManager) SendTouchToBlockedAccount(phone string) {
 	}
 	
 	// Try presence - this should work even when restricted
-	_ = acc.Client.SendPresence(types.PresenceAvailable)
+	ctx := context.Background()
+	_ = acc.Client.SendPresence(ctx, types.PresenceAvailable)
 	time.Sleep(1 * time.Second)
-	_ = acc.Client.SendPresence(types.PresenceUnavailable)
+	_ = acc.Client.SendPresence(ctx, types.PresenceUnavailable)
 	
 	if remaining > 0 {
 		log.Printf("[Restricted] 👆 Touch sent to %s (%v remaining)", phone, remaining.Round(time.Minute))
