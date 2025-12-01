@@ -257,17 +257,14 @@ func (m *ClientManager) sendKeepAliveMessages() {
 		// Get or create daily stats
 		stats := m.getOrCreateDailyStats(acc.Phone, today)
 
-		// Get stage config
-		stage := m.getAccountStage(acc)
-		config := keepAliveByStage[stage]
+		// v8.0: Simplified - use adult config
+		config := keepAliveByStage["adult"]
 		if config.MessagesPerDay == 0 {
-			config = keepAliveByStage["adult"] // Default
-		}
-
-		// Reduce activity for accounts with many disconnects (but not unstable yet)
-		if acc.DisconnectCount > 5 {
-			config.MinInterval = config.MinInterval * 2 // Double the interval
-			log.Printf("[KeepAlive] 🐢 Reduced activity for %s (disconnects: %d)", acc.Phone, acc.DisconnectCount)
+			config = KeepAliveConfig{
+				MinInterval:    30 * time.Minute,
+				MessagesPerDay: 5,
+				TouchesPerDay:  10,
+			}
 		}
 
 		// Check minimum interval

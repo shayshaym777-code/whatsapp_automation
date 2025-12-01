@@ -183,24 +183,10 @@ func (m *ClientManager) StartHumanActivitySimulator(phone string) {
 		log.Printf("[Activity] 🤖 Started human activity simulator for %s", phone)
 
 		for {
-			// Check if account is unstable - reduce activity
-			m.mu.RLock()
-			acc, exists := m.accounts[phone]
-			m.mu.RUnlock()
-
-			var waitDuration time.Duration
-			if exists && acc != nil && acc.IsUnstable {
-				// Unstable accounts: wait 2-4 hours between activities
-				waitDuration = time.Duration(120+rand.Intn(120)) * time.Minute
-				log.Printf("[Activity] 🐢 Reduced activity for unstable account %s (next in %v)", phone, waitDuration)
-			} else if exists && acc != nil && acc.DisconnectCount > 5 {
-				// Many disconnects: wait 1-2 hours
-				waitDuration = time.Duration(60+rand.Intn(60)) * time.Minute
-			} else {
-				// Normal: 15-45 minutes
-				waitMinutes := rand.Intn(int(ActivityMaxInterval-ActivityMinInterval)/int(time.Minute)) + int(ActivityMinInterval/time.Minute)
-				waitDuration = time.Duration(waitMinutes) * time.Minute
-			}
+			// v8.0: Simplified - no unstable tracking
+			// Normal wait: 15-45 minutes
+			waitMinutes := rand.Intn(int(ActivityMaxInterval-ActivityMinInterval)/int(time.Minute)) + int(ActivityMinInterval/time.Minute)
+			waitDuration := time.Duration(waitMinutes) * time.Minute
 
 			select {
 			case <-time.After(waitDuration):
@@ -209,16 +195,7 @@ func (m *ClientManager) StartHumanActivitySimulator(phone string) {
 				acc, exists := m.accounts[phone]
 				m.mu.RUnlock()
 
-				// For unstable accounts - do light touches only, don't skip!
-				if exists && acc != nil && acc.IsUnstable {
-					log.Printf("[Activity] 🐢 Light touch for unstable account %s", phone)
-					// Just send presence - very light activity
-					if acc.Client != nil {
-						ctx := context.Background()
-						_ = acc.Client.SendPresence(ctx, types.PresenceAvailable)
-						time.Sleep(2 * time.Second)
-						_ = acc.Client.SendPresence(ctx, types.PresenceUnavailable)
-					}
+				if !exists || acc == nil {
 					continue
 				}
 
