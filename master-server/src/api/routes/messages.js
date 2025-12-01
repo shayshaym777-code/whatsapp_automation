@@ -415,7 +415,7 @@ router.post('/campaign/preview', async (req, res, next) => {
 router.get('/accounts/power', async (req, res, next) => {
     try {
         const accounts = await loadBalancer.fetchActiveAccounts();
-        
+
         const summary = accounts.map(acc => ({
             phone: acc.phone,
             stage: acc.stage,
@@ -450,7 +450,7 @@ router.get('/accounts/power', async (req, res, next) => {
 router.get('/capacity', async (req, res, next) => {
     try {
         const accounts = await loadBalancer.fetchActiveAccounts();
-        
+
         if (accounts.length === 0) {
             return res.status(200).json({
                 success: true,
@@ -471,7 +471,7 @@ router.get('/capacity', async (req, res, next) => {
 
         for (const acc of accounts) {
             const available = Math.max(0, acc.maxDay - acc.todayCount);
-            
+
             accountDetails.push({
                 phone: acc.phone,
                 stage: acc.stage,
@@ -496,7 +496,7 @@ router.get('/capacity', async (req, res, next) => {
             success: true,
             ready: ready,
             reason: ready ? 'ok' : 'all_accounts_at_limit',
-            message: ready 
+            message: ready
                 ? `מוכן לשליחה! ${availableAccounts} חשבונות פנויים, קיבולת: ${totalCapacity} הודעות`
                 : 'כל החשבונות הגיעו למגבלה היומית',
             totalAccounts: accounts.length,
@@ -523,15 +523,15 @@ router.get('/capacity', async (req, res, next) => {
 router.post('/can-send', async (req, res, next) => {
     try {
         const { count } = req.body;
-        
+
         if (!count || count < 1) {
-            return res.status(400).json({ 
-                error: 'count is required and must be > 0' 
+            return res.status(400).json({
+                error: 'count is required and must be > 0'
             });
         }
 
         const accounts = await loadBalancer.fetchActiveAccounts();
-        
+
         if (accounts.length === 0) {
             return res.status(200).json({
                 success: true,
@@ -551,7 +551,7 @@ router.post('/can-send', async (req, res, next) => {
         for (const acc of accounts) {
             const available = Math.max(0, acc.maxDay - acc.todayCount);
             totalAvailable += available;
-            
+
             if (available > 0) {
                 accountCapacity.push({
                     phone: acc.phone,
@@ -570,7 +570,7 @@ router.post('/can-send', async (req, res, next) => {
             requested: count,
             available: totalAvailable,
             shortage: shortage,
-            message: canSend 
+            message: canSend
                 ? `✅ אפשר לשלוח ${count} הודעות! (קיבולת פנויה: ${totalAvailable})`
                 : `❌ לא ניתן לשלוח ${count} הודעות. קיבולת פנויה: ${totalAvailable}, חסר: ${shortage}`,
             accounts: accountCapacity

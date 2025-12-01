@@ -141,6 +141,9 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 
 	// Proxy endpoints
 	r.HandleFunc("/proxy/stats", s.handleProxyStats).Methods(http.MethodGet)
+
+	// Capacity endpoints
+	r.HandleFunc("/capacity", s.handleCapacity).Methods(http.MethodGet)
 }
 
 // writeJSON writes a JSON response
@@ -730,5 +733,32 @@ func (s *Server) handleReceivedMessagesForPhone(w http.ResponseWriter, r *http.R
 		"phone":    phone,
 		"count":    len(messages),
 		"messages": formatted,
+	})
+}
+
+// GET /capacity - Get sending capacity for all accounts
+func (s *Server) handleCapacity(w http.ResponseWriter, r *http.Request) {
+	accounts := s.client.GetAccountsCapacity()
+
+	totalCapacity := 0
+	availableAccounts := 0
+
+	for _, acc := range accounts {
+		if acc["available"].(int) > 0 {
+			availableAccounts++
+			totalCapacity += acc["available"].(int)
+		}
+	}
+
+	ready := totalCapacity > 0
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":           true,
+		"ready":             ready,
+		"worker_id":         s.WorkerID,
+		"total_accounts":    len(accounts),
+		"available_accounts": availableAccounts,
+		"total_capacity":    totalCapacity,
+		"accounts":          accounts,
 	})
 }

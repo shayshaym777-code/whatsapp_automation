@@ -84,9 +84,12 @@ type AccountClient struct {
 	WarmupComplete bool      // True after 3 days of warmup
 	WarmupStage    string    // Current stage: new_born, baby, toddler, teen, adult, veteran
 
-	// Message tracking for pauses
-	SessionMsgCount int // Messages sent in current session (reset on pause)
-	TotalMsgToday   int // Total messages sent today
+	// Message tracking for pauses and limits
+	SessionMsgCount int       // Messages sent in current session (reset on pause)
+	TotalMsgToday   int       // Total messages sent today
+	HourMsgCount    int       // Messages sent this hour
+	LastHourReset   time.Time // When hourly count was last reset
+	LastDayReset    time.Time // When daily count was last reset
 
 	// Health tracking
 	LastError           string    // Last error message
@@ -896,6 +899,30 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 		return nil, fmt.Errorf("account %s not logged in", fromPhone)
 	}
 
+	// === LIMIT CHECK: Enforce daily and hourly limits ===
+	// First, reset counters if needed
+	m.resetCountersIfNeeded(acc)
+	
+	acc.mu.RLock()
+	stage := acc.WarmupStage
+	todayCount := acc.TotalMsgToday
+	hourCount := acc.HourMsgCount
+	acc.mu.RUnlock()
+
+	limits := getStageLimits(stage)
+	
+	// Check daily limit
+	if todayCount >= limits.MaxDay {
+		return nil, fmt.Errorf("daily limit reached for %s: %d/%d (stage: %s)", 
+			fromPhone, todayCount, limits.MaxDay, stage)
+	}
+	
+	// Check hourly limit
+	if hourCount >= limits.MaxHour {
+		return nil, fmt.Errorf("hourly limit reached for %s: %d/%d (stage: %s)", 
+			fromPhone, hourCount, limits.MaxHour, stage)
+	}
+
 	// Parse recipient JID
 	recipientJID, err := parseJID(toPhone)
 	if err != nil {
@@ -907,7 +934,6 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 
 	// === ANTI-BAN: Get stage-based delay ===
 	acc.mu.RLock()
-	stage := acc.WarmupStage
 	sessionCount := acc.SessionMsgCount
 	acc.mu.RUnlock()
 
@@ -975,6 +1001,7 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 	acc.mu.Lock()
 	acc.SessionMsgCount++
 	acc.TotalMsgToday++
+	acc.HourMsgCount++
 	acc.mu.Unlock()
 
 	// Also increment session-wide counter
@@ -1017,6 +1044,58 @@ func (m *ClientManager) applyPauses(msgCount int) time.Duration {
 	}
 
 	return 0
+}
+
+// StageLimits defines daily and hourly limits per stage
+type StageLimits struct {
+	MaxDay  int
+	MaxHour int
+}
+
+// resetCountersIfNeeded resets hourly and daily counters when time passes
+func (m *ClientManager) resetCountersIfNeeded(acc *AccountClient) {
+	now := time.Now()
+	
+	acc.mu.Lock()
+	defer acc.mu.Unlock()
+	
+	// Reset hourly counter if new hour
+	if now.Hour() != acc.LastHourReset.Hour() || now.Sub(acc.LastHourReset) > time.Hour {
+		if acc.HourMsgCount > 0 {
+			log.Printf("[%s] Hourly counter reset (was %d)", acc.Phone, acc.HourMsgCount)
+		}
+		acc.HourMsgCount = 0
+		acc.LastHourReset = now
+	}
+	
+	// Reset daily counter if new day
+	today := now.Format("2006-01-02")
+	lastDay := acc.LastDayReset.Format("2006-01-02")
+	if today != lastDay {
+		if acc.TotalMsgToday > 0 {
+			log.Printf("[%s] Daily counter reset (was %d)", acc.Phone, acc.TotalMsgToday)
+		}
+		acc.TotalMsgToday = 0
+		acc.SessionMsgCount = 0
+		acc.LastDayReset = now
+	}
+}
+
+// getStageLimits returns the sending limits based on warmup stage
+func getStageLimits(stage string) StageLimits {
+	limits := map[string]StageLimits{
+		"new_born": {MaxDay: 5, MaxHour: 2},
+		"baby":     {MaxDay: 15, MaxHour: 5},
+		"toddler":  {MaxDay: 30, MaxHour: 10},
+		"teen":     {MaxDay: 50, MaxHour: 15},
+		"adult":    {MaxDay: 100, MaxHour: 25},
+		"veteran":  {MaxDay: 200, MaxHour: 50},
+	}
+
+	if l, ok := limits[stage]; ok {
+		return l
+	}
+	return limits["adult"] // Default
 }
 
 // getDelayByStage returns the delay based on warmup stage

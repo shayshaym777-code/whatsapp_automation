@@ -254,3 +254,57 @@ func (m *ClientManager) GetWarmupStatus() []map[string]interface{} {
 
 	return statuses
 }
+
+// GetAccountsCapacity returns the sending capacity for all accounts
+func (m *ClientManager) GetAccountsCapacity() []map[string]interface{} {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var capacities []map[string]interface{}
+	for phone, acc := range m.accounts {
+		if !acc.LoggedIn || !acc.Connected {
+			continue
+		}
+
+		acc.mu.RLock()
+		stage := acc.WarmupStage
+		if stage == "" {
+			stage = "adult"
+		}
+		todayCount := acc.TotalMsgToday
+		hourCount := acc.HourMsgCount
+		acc.mu.RUnlock()
+
+		limits := getStageLimits(stage)
+		availableDaily := limits.MaxDay - todayCount
+		availableHourly := limits.MaxHour - hourCount
+		
+		if availableDaily < 0 {
+			availableDaily = 0
+		}
+		if availableHourly < 0 {
+			availableHourly = 0
+		}
+
+		// Available is the minimum of daily and hourly remaining
+		available := availableDaily
+		if availableHourly < available {
+			available = availableHourly
+		}
+
+		capacities = append(capacities, map[string]interface{}{
+			"phone":            phone,
+			"stage":            stage,
+			"max_daily":        limits.MaxDay,
+			"max_hourly":       limits.MaxHour,
+			"sent_today":       todayCount,
+			"sent_this_hour":   hourCount,
+			"available_daily":  availableDaily,
+			"available_hourly": availableHourly,
+			"available":        available,
+			"can_send":         available > 0,
+		})
+	}
+
+	return capacities
+}
