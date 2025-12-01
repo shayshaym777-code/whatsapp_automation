@@ -88,6 +88,11 @@ type AccountClient struct {
 	SessionMsgCount int // Messages sent in current session (reset on pause)
 	TotalMsgToday   int // Total messages sent today
 
+	// Health tracking
+	LastError           string    // Last error message
+	ConsecutiveFailures int       // Number of consecutive failures
+	BannedUntil         time.Time // If temp banned, when it expires
+
 	// Mutex for thread-safe access
 	mu sync.RWMutex
 }
@@ -643,7 +648,7 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 	case *events.Connected:
 		// Only log if state actually changed
 		if !acc.lastConnectedState || !acc.lastLoggedInState {
-			log.Printf("[%s] Connected to WhatsApp", phone)
+			log.Printf("[%s] ✅ Connected to WhatsApp", phone)
 		}
 		acc.Connected = true
 		acc.LoggedIn = true
@@ -651,28 +656,128 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 		acc.lastConnectedState = true
 		acc.lastLoggedInState = true
 		acc.lastStateChange = time.Now()
+		acc.LastError = ""
+		acc.ConsecutiveFailures = 0
 		m.mu.Unlock()
+
+		// Update health status
+		if health := m.GetAccountHealth(phone); health != nil {
+			health.Status = StatusHealthy
+			health.LastAlive = time.Now()
+			health.ConsecutiveFailures = 0
+			health.LastError = ""
+		}
+
+		// Start activity simulator for this account
+		go m.StartHumanActivitySimulator(phone)
 
 	case *events.LoggedOut:
 		// Always log logout - it's important
-		log.Printf("[%s] Logged out from WhatsApp: %v", phone, v.Reason)
+		log.Printf("[%s] ⚠️ Logged out from WhatsApp: %v", phone, v.Reason)
 		acc.LoggedIn = false
 		acc.lastLoggedInState = false
 		acc.lastStateChange = time.Now()
+		acc.LastError = fmt.Sprintf("Logged out: %v", v.Reason)
 		m.mu.Unlock()
+
+		// Update health
+		if health := m.GetAccountHealth(phone); health != nil {
+			health.Status = StatusDisconnected
+			health.LastError = acc.LastError
+		}
 
 	case *events.Disconnected:
 		// Only log if state actually changed
 		if acc.lastConnectedState {
-			log.Printf("[%s] Disconnected from WhatsApp", phone)
+			log.Printf("[%s] ❌ Disconnected from WhatsApp", phone)
 		}
 		acc.Connected = false
 		acc.lastConnectedState = false
 		acc.lastStateChange = time.Now()
 		m.mu.Unlock()
 
+		// Update health
+		if health := m.GetAccountHealth(phone); health != nil {
+			health.Status = StatusDisconnected
+		}
+
+		// Attempt reconnect after 5 seconds (only if was logged in)
+		if acc.LoggedIn {
+			go func(p string) {
+				time.Sleep(5 * time.Second)
+				m.attemptSmartReconnect(p)
+			}(phone)
+		}
+
+	case *events.KeepAliveTimeout:
+		log.Printf("[%s] ⚠️ KeepAlive timeout (errors: %d, last success: %v)",
+			phone, v.ErrorCount, v.LastSuccess)
+		acc.ConsecutiveFailures = int(v.ErrorCount)
+		m.mu.Unlock()
+
+		// Update health
+		if health := m.GetAccountHealth(phone); health != nil {
+			health.ConsecutiveFailures = int(v.ErrorCount)
+			if v.ErrorCount > 5 {
+				health.Status = StatusSuspicious
+			}
+		}
+
+		// Force reconnect if too many failures
+		if v.ErrorCount > 5 {
+			log.Printf("[%s] 🔄 Too many keepalive failures, forcing reconnect", phone)
+			go func(p string) {
+				m.mu.RLock()
+				a, ok := m.accounts[p]
+				m.mu.RUnlock()
+				if ok && a.Client != nil {
+					a.Client.Disconnect()
+					time.Sleep(3 * time.Second)
+					m.attemptSmartReconnect(p)
+				}
+			}(phone)
+		}
+
+	case *events.KeepAliveRestored:
+		log.Printf("[%s] ✅ KeepAlive restored", phone)
+		acc.ConsecutiveFailures = 0
+		acc.LastError = ""
+		m.mu.Unlock()
+
+		// Update health
+		if health := m.GetAccountHealth(phone); health != nil {
+			health.Status = StatusHealthy
+			health.ConsecutiveFailures = 0
+			health.LastAlive = time.Now()
+		}
+
+	case *events.StreamReplaced:
+		log.Printf("[%s] 🚨 Stream replaced! Another client connected with same session", phone)
+		acc.Connected = false
+		acc.LastError = "Stream replaced - another device connected"
+		m.mu.Unlock()
+
+		// Update health - don't auto-reconnect to avoid loop
+		if health := m.GetAccountHealth(phone); health != nil {
+			health.Status = StatusSuspicious
+			health.LastError = "Stream replaced by another device"
+		}
+
+	case *events.TemporaryBan:
+		log.Printf("[%s] ⛔ TEMPORARY BAN! Code: %s, Expires: %v",
+			phone, v.Code.String(), v.Expire)
+		acc.LastError = fmt.Sprintf("Temp ban: %s, expires: %v", v.Code.String(), v.Expire)
+		acc.BannedUntil = time.Now().Add(v.Expire)
+		m.mu.Unlock()
+
+		// Update health
+		if health := m.GetAccountHealth(phone); health != nil {
+			health.Status = StatusBlocked
+			health.LastError = acc.LastError
+		}
+
 	case *events.PairSuccess:
-		log.Printf("[%s] Successfully paired with device: %s", phone, v.ID.String())
+		log.Printf("[%s] ✅ Successfully paired with device: %s", phone, v.ID.String())
 		acc.LoggedIn = true
 		acc.QRCode = ""
 		acc.lastLoggedInState = true
@@ -693,14 +798,86 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 		if isNewAccount {
 			go m.registerWithMaster(phone)
 		}
+		// Start activity simulator
+		go m.StartHumanActivitySimulator(phone)
 
 	case *events.Message:
 		m.mu.Unlock()
-		// Don't log every message - too spammy
-		// log.Printf("[%s] Received message from %s", phone, v.Info.Sender.String())
+		// Handle incoming message
+		m.handleIncomingMessage(phone, v)
+
+	case *events.Receipt:
+		m.mu.Unlock()
+		// Handle delivery/read receipts
+		if v.Type == types.ReceiptTypeDelivered {
+			log.Printf("[%s] ✅✅ Message delivered to %s", phone, v.Chat.User)
+		} else if v.Type == types.ReceiptTypeRead {
+			log.Printf("[%s] ✅✅🔵 Message read by %s", phone, v.Chat.User)
+		}
 
 	default:
 		m.mu.Unlock()
+	}
+}
+
+// attemptSmartReconnect tries to reconnect with exponential backoff
+func (m *ClientManager) attemptSmartReconnect(phone string) {
+	m.mu.RLock()
+	acc, exists := m.accounts[phone]
+	m.mu.RUnlock()
+
+	if !exists || acc.Client == nil {
+		return
+	}
+
+	// Check if banned
+	if !acc.BannedUntil.IsZero() && time.Now().Before(acc.BannedUntil) {
+		log.Printf("[%s] Account banned until %v, skipping reconnect", phone, acc.BannedUntil)
+		return
+	}
+
+	maxRetries := 5
+	for i := 0; i < maxRetries; i++ {
+		// Check if already connected
+		if acc.Client.IsConnected() && acc.Client.IsLoggedIn() {
+			log.Printf("[%s] ✅ Already connected, skipping reconnect", phone)
+			return
+		}
+
+		log.Printf("[%s] 🔄 Reconnect attempt %d/%d", phone, i+1, maxRetries)
+
+		err := acc.Client.Connect()
+		if err == nil {
+			// Wait for connection to stabilize
+			time.Sleep(3 * time.Second)
+
+			if acc.Client.IsConnected() && acc.Client.IsLoggedIn() {
+				log.Printf("[%s] ✅ Reconnected successfully", phone)
+				m.mu.Lock()
+				acc.Connected = true
+				acc.LoggedIn = true
+				acc.ConsecutiveFailures = 0
+				m.mu.Unlock()
+				return
+			}
+		}
+
+		log.Printf("[%s] ❌ Reconnect attempt %d failed: %v", phone, i+1, err)
+
+		// Exponential backoff: 5s, 10s, 20s, 40s, 80s
+		backoff := time.Duration(5*(1<<i)) * time.Second
+		if backoff > 2*time.Minute {
+			backoff = 2 * time.Minute
+		}
+		time.Sleep(backoff)
+	}
+
+	log.Printf("[%s] 🚨 All reconnect attempts failed", phone)
+
+	// Update health
+	if health := m.GetAccountHealth(phone); health != nil {
+		health.Status = StatusDisconnected
+		health.LastError = "All reconnect attempts failed"
 	}
 }
 
