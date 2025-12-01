@@ -63,7 +63,7 @@ function calculatePowerScore(account) {
     const stage = STAGES[account.stage] || STAGES['Adult'];
     const remaining = stage.dailyLimit - (account.messages_today || 0);
     if (remaining <= 0) return 0;
-    
+
     const capacityRatio = remaining / stage.dailyLimit;
     return Math.floor(stage.power * capacityRatio);
 }
@@ -71,7 +71,7 @@ function calculatePowerScore(account) {
 // Distribute contacts by power score
 function distributeByPower(accounts, totalContacts) {
     const distribution = {};
-    
+
     // Calculate total power
     let totalPower = 0;
     const accountsWithPower = accounts.map(acc => {
@@ -124,7 +124,7 @@ router.post('/', async (req, res, next) => {
 
         // Get available accounts
         const accounts = await getAvailableAccounts();
-        
+
         if (accounts.length === 0) {
             await sendTelegramAlert('⚠️ <b>LOW DEVICES</b>\n\nNo healthy accounts available!');
             return res.status(503).json({ error: 'No healthy accounts available' });
@@ -140,7 +140,7 @@ router.post('/', async (req, res, next) => {
             VALUES ($1, $2, $3, 'in_progress')
             RETURNING *
         `, [`Campaign ${Date.now()}`, message, contacts.length]);
-        
+
         const campaign = campaignResult.rows[0];
 
         // Distribute contacts by power
@@ -175,7 +175,7 @@ async function processCampaign(campaignId, contacts, message, distribution, opti
     // Prepare contact assignments
     const assignments = [];
     let contactIndex = 0;
-    
+
     for (const [phone, count] of Object.entries(distribution)) {
         for (let i = 0; i < count && contactIndex < contacts.length; i++) {
             assignments.push({
@@ -196,7 +196,7 @@ async function processCampaign(campaignId, contacts, message, distribution, opti
     const sendPromises = Object.entries(accountGroups).map(async ([phone, phoneContacts]) => {
         // Find worker for this phone
         const worker = WORKERS[0]; // TODO: Get correct worker for phone
-        
+
         for (const contact of phoneContacts) {
             try {
                 const toPhone = typeof contact === 'object' ? contact.phone : contact;

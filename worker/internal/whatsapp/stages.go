@@ -7,21 +7,21 @@ import (
 // v7.0 Warmup Stages
 // Each stage has different daily limits and power scores
 const (
-	StageWarming  = "WARMING"  // Day 1-3: Only internal warmup, no campaigns
-	StageBaby     = "Baby"     // Day 4-7: Light activity
-	StageToddler  = "Toddler"  // Day 8-14: Moderate activity
-	StageTeen     = "Teen"     // Day 15-30: Normal activity
-	StageAdult    = "Adult"    // Day 31-60: Full activity
-	StageVeteran  = "Veteran"  // Day 60+: Maximum capacity
+	StageWarming = "WARMING" // Day 1-3: Only internal warmup, no campaigns
+	StageBaby    = "Baby"    // Day 4-7: Light activity
+	StageToddler = "Toddler" // Day 8-14: Moderate activity
+	StageTeen    = "Teen"    // Day 15-30: Normal activity
+	StageAdult   = "Adult"   // Day 31-60: Full activity
+	StageVeteran = "Veteran" // Day 60+: Maximum capacity
 )
 
 // StageConfig defines the configuration for each warmup stage
 type StageConfig struct {
-	Name       string
-	MinDays    int
-	MaxDays    int
-	DailyLimit int
-	Power      int  // Power score for load distribution
+	Name        string
+	MinDays     int
+	MaxDays     int
+	DailyLimit  int
+	Power       int  // Power score for load distribution
 	CanCampaign bool // Can participate in campaigns
 }
 
@@ -174,7 +174,7 @@ func DistributeByPower(accounts []AccountPowerInfo, totalContacts int) map[strin
 		if acc.Power > 0 && acc.CanSend {
 			// Calculate share based on power ratio
 			share := (acc.Power * totalContacts) / totalPower
-			
+
 			// Don't exceed remaining capacity
 			if share > acc.Remaining {
 				share = acc.Remaining
@@ -214,4 +214,3 @@ type AccountPowerInfo struct {
 	Remaining int  // Remaining daily capacity
 	CanSend   bool // Is healthy and can send
 }
-

@@ -360,9 +360,9 @@ func (s *Server) handleAccountsConnect(w http.ResponseWriter, r *http.Request) {
 
 // PairRequest represents a pairing code connection request (v7.0: added is_new flag)
 type PairRequest struct {
-	Phone        string `json:"phone"`
-	IsNew        bool   `json:"is_new"`        // v7.0: If true, account enters 3-day warmup
-	SessionNumber int   `json:"session_number"` // v7.0: Session number 1-4 (default 1)
+	Phone         string `json:"phone"`
+	IsNew         bool   `json:"is_new"`         // v7.0: If true, account enters 3-day warmup
+	SessionNumber int    `json:"session_number"` // v7.0: Session number 1-4 (default 1)
 }
 
 // POST /accounts/pair - Connect a WhatsApp account using pairing code (faster than QR)
@@ -400,7 +400,7 @@ func (s *Server) handleAccountsPair(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[PAIR] Account %s marked as NEW - will enter 3-day warmup", req.Phone)
 	}
 
-	log.Printf("[PAIR] Account %s status: %s (session %d, is_new: %v)", 
+	log.Printf("[PAIR] Account %s status: %s (session %d, is_new: %v)",
 		req.Phone, result.Status, req.SessionNumber, req.IsNew)
 
 	stage := "Adult"
@@ -942,4 +942,3 @@ func (s *Server) handleCanSend(w http.ResponseWriter, r *http.Request) {
 		"accounts":         accountStatus,
 	})
 }
-

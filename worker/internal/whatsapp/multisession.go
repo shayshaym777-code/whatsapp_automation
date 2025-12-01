@@ -20,14 +20,17 @@ type SessionInfo struct {
 	Status        string    // CONNECTED, DISCONNECTED, CONNECTING
 	LastActive    time.Time // Last activity timestamp
 	Client        *AccountClient
+
+	// Unique fingerprint per session
+	Fingerprint *SessionFingerprint
 }
 
 // PhoneMultiSession manages multiple sessions for a single phone number
 type PhoneMultiSession struct {
-	Phone          string
-	Sessions       []*SessionInfo
-	ActiveSession  int // Currently active session number (1-4)
-	mu             sync.RWMutex
+	Phone         string
+	Sessions      []*SessionInfo
+	ActiveSession int // Currently active session number (1-4)
+	mu            sync.RWMutex
 }
 
 // MultiSessionManager manages all phone numbers and their sessions
@@ -61,8 +64,8 @@ func (m *MultiSessionManager) GetOrCreatePhoneSession(phone string) *PhoneMultiS
 	return ps
 }
 
-// AddSession adds a new session for a phone number
-func (ps *PhoneMultiSession) AddSession(sessionNum int, workerID string, client *AccountClient) error {
+// AddSession adds a new session for a phone number with unique fingerprint
+func (ps *PhoneMultiSession) AddSession(sessionNum int, workerID string, client *AccountClient, fingerprint *SessionFingerprint) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -78,8 +81,21 @@ func (ps *PhoneMultiSession) AddSession(sessionNum int, workerID string, client 
 			ps.Sessions[i].Client = client
 			ps.Sessions[i].Status = "CONNECTED"
 			ps.Sessions[i].LastActive = time.Now()
+			if fingerprint != nil {
+				ps.Sessions[i].Fingerprint = fingerprint
+			}
 			log.Printf("[MultiSession] Updated session %d for %s", sessionNum, ps.Phone)
 			return nil
+		}
+	}
+
+	// Generate fingerprint if not provided
+	if fingerprint == nil {
+		country := GetCountryFromPhone(ps.Phone)
+		var err error
+		fingerprint, err = GetFingerprintPool().GenerateSessionFingerprint(ps.Phone, sessionNum, country)
+		if err != nil {
+			log.Printf("[MultiSession] Warning: could not generate fingerprint: %v", err)
 		}
 	}
 
@@ -90,6 +106,7 @@ func (ps *PhoneMultiSession) AddSession(sessionNum int, workerID string, client 
 		Status:        "CONNECTED",
 		LastActive:    time.Now(),
 		Client:        client,
+		Fingerprint:   fingerprint,
 	}
 	ps.Sessions = append(ps.Sessions, session)
 
@@ -99,8 +116,26 @@ func (ps *PhoneMultiSession) AddSession(sessionNum int, workerID string, client 
 		log.Printf("[MultiSession] Session %d is now ACTIVE for %s", sessionNum, ps.Phone)
 	}
 
-	log.Printf("[MultiSession] Added session %d for %s (total: %d sessions)", sessionNum, ps.Phone, len(ps.Sessions))
+	// Log fingerprint info
+	if fingerprint != nil {
+		log.Printf("[MultiSession] Added session %d for %s (total: %d sessions, UA: %s..., Screen: %dx%d, TZ: %s)",
+			sessionNum, ps.Phone, len(ps.Sessions),
+			fingerprint.UserAgent[:minInt(30, len(fingerprint.UserAgent))],
+			fingerprint.ScreenWidth, fingerprint.ScreenHeight,
+			fingerprint.Timezone)
+	} else {
+		log.Printf("[MultiSession] Added session %d for %s (total: %d sessions)", sessionNum, ps.Phone, len(ps.Sessions))
+	}
+
 	return nil
+}
+
+// minInt helper for string truncation (avoid conflict with telegram.min)
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // GetActiveSession returns the currently active session's client
@@ -185,12 +220,26 @@ func (ps *PhoneMultiSession) GetStatus() map[string]interface{} {
 
 	sessions := make([]map[string]interface{}, len(ps.Sessions))
 	for i, s := range ps.Sessions {
-		sessions[i] = map[string]interface{}{
+		sessionInfo := map[string]interface{}{
 			"session_number": s.SessionNumber,
 			"worker_id":      s.WorkerID,
 			"status":         s.Status,
 			"last_active":    s.LastActive,
 		}
+
+		// Add fingerprint info if available
+		if s.Fingerprint != nil {
+			sessionInfo["fingerprint"] = map[string]interface{}{
+				"user_agent":    s.Fingerprint.UserAgent,
+				"screen_width":  s.Fingerprint.ScreenWidth,
+				"screen_height": s.Fingerprint.ScreenHeight,
+				"timezone":      s.Fingerprint.Timezone,
+				"language":      s.Fingerprint.Language,
+				"proxy_id":      s.Fingerprint.ProxyID,
+			}
+		}
+
+		sessions[i] = sessionInfo
 	}
 
 	connected, total := ps.GetSessionCount()
@@ -205,11 +254,11 @@ func (ps *PhoneMultiSession) GetStatus() map[string]interface{} {
 }
 
 // HandleSessionEvent handles session connect/disconnect events
-func (m *MultiSessionManager) HandleSessionEvent(phone string, sessionNum int, workerID string, connected bool, client *AccountClient) {
+func (m *MultiSessionManager) HandleSessionEvent(phone string, sessionNum int, workerID string, connected bool, client *AccountClient, fingerprint *SessionFingerprint) {
 	ps := m.GetOrCreatePhoneSession(phone)
 
 	if connected {
-		ps.AddSession(sessionNum, workerID, client)
+		ps.AddSession(sessionNum, workerID, client, fingerprint)
 	} else {
 		failedOver, newSession := ps.MarkSessionDisconnected(sessionNum, workerID)
 
@@ -264,4 +313,3 @@ func (m *MultiSessionManager) SendFromPhone(ctx context.Context, phone, toPhone,
 func AlertAllSessionsDown(phone string) {
 	telegram.AlertAllSessionsDown(phone)
 }
-

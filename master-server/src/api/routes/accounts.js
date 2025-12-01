@@ -33,7 +33,7 @@ router.get('/', async (req, res, next) => {
             FROM accounts a
             ORDER BY a.created_at DESC LIMIT 200
         `);
-        
+
         // Add stage info
         const accounts = result.rows.map(acc => {
             const stage = STAGES[acc.stage] || STAGES['Adult'];
@@ -45,7 +45,7 @@ router.get('/', async (req, res, next) => {
                 power: stage.power
             };
         });
-        
+
         res.json({ accounts });
     } catch (err) {
         next(err);

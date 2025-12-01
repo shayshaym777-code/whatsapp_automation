@@ -2242,14 +2242,14 @@ func (m *ClientManager) GetAccountStageInfo(phone string) map[string]interface{}
 	stage := GetStageForAccount(acc.CreatedAt, acc.IsNew)
 
 	return map[string]interface{}{
-		"phone":       phone,
-		"stage":       stage.Name,
-		"power":       stage.Power,
-		"daily_limit": stage.DailyLimit,
-		"can_campaign": stage.CanCampaign,
-		"is_new":      acc.IsNew,
-		"days_active": int(time.Since(acc.CreatedAt).Hours() / 24),
+		"phone":          phone,
+		"stage":          stage.Name,
+		"power":          stage.Power,
+		"daily_limit":    stage.DailyLimit,
+		"can_campaign":   stage.CanCampaign,
+		"is_new":         acc.IsNew,
+		"days_active":    int(time.Since(acc.CreatedAt).Hours() / 24),
 		"messages_today": acc.TotalMsgToday,
-		"remaining":   stage.DailyLimit - acc.TotalMsgToday,
+		"remaining":      stage.DailyLimit - acc.TotalMsgToday,
 	}
 }
