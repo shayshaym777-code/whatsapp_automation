@@ -280,15 +280,10 @@ func (m *ClientManager) sendKeepAliveMessages() {
 			continue // Daily limit reached
 		}
 
-		// Prefer touches for new accounts (70% touch, 30% message)
-		// For older accounts (50% touch, 50% message)
+		// v8.0: Simplified - 50% touch, 50% message
 		doTouch := false
 		if canDoTouch && canSendMessage {
-			touchChance := 70 // New accounts prefer touches
-			if stage == "adult" || stage == "teen" {
-				touchChance = 50
-			}
-			doTouch = rand.Intn(100) < touchChance
+			doTouch = rand.Intn(100) < 50
 		} else if canDoTouch {
 			doTouch = true
 		}
@@ -298,8 +293,8 @@ func (m *ClientManager) sendKeepAliveMessages() {
 			m.performKeepAliveTouch(acc)
 			stats.TouchesDone++
 			stats.LastActionTime = time.Now()
-			log.Printf("[KeepAlive] 👆 Touch done: %s (stage: %s, touches: %d/%d)",
-				acc.Phone, stage, stats.TouchesDone, config.TouchesPerDay)
+			log.Printf("[KeepAlive] 👆 Touch done: %s (touches: %d/%d)",
+				acc.Phone, stats.TouchesDone, config.TouchesPerDay)
 		} else if canSendMessage {
 			// For warmup/keep alive: prefer internal accounts first, then external
 			// New accounts (< 3 days) MUST only send to internal accounts!
@@ -307,7 +302,7 @@ func (m *ClientManager) sendKeepAliveMessages() {
 			var message string
 
 			daysSinceCreation := time.Since(acc.CreatedAt).Hours() / 24
-			isNewAccount := daysSinceCreation < 3 || stage == "newborn" || stage == "infant"
+			isNewAccount := daysSinceCreation < 3
 
 			if isNewAccount {
 				// New accounts: ONLY internal accounts (warmup between friends)
@@ -363,8 +358,8 @@ func (m *ClientManager) sendKeepAliveMessages() {
 				health.TempBlockedAt = time.Time{} // Clear any temp block
 				stats.MessagesSent++
 				stats.LastActionTime = time.Now()
-				log.Printf("[KeepAlive] ✅ Message sent: %s -> %s (stage: %s, msgs: %d/%d)",
-					acc.Phone, targetPhone, stage, stats.MessagesSent, config.MessagesPerDay)
+				log.Printf("[KeepAlive] ✅ Message sent: %s -> %s (msgs: %d/%d)",
+					acc.Phone, targetPhone, stats.MessagesSent, config.MessagesPerDay)
 			}
 		}
 

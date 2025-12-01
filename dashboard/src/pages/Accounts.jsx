@@ -58,7 +58,7 @@ function Accounts() {
 
     const connectedCount = accounts.filter(a => getStatus(a) === 'CONNECTED').length
     const disconnectedCount = accounts.filter(a => getStatus(a) === 'DISCONNECTED').length
-    
+
     // Accounts that don't have all 4 sessions
     const incompleteCount = accounts.filter(a => {
         const info = getSessionInfo(a)
@@ -224,10 +224,9 @@ function AccountCard({ account, status, sessionInfo, onReconnect }) {
             {/* Header */}
             <div className="flex items-start justify-between mb-4">
                 <div className="flex items-center gap-3">
-                    <div className={`w-14 h-14 rounded-full flex items-center justify-center text-2xl ${
-                        allSessionsConnected ? 'bg-green-500/20' : 
-                        isConnected ? 'bg-green-500/20' : 'bg-red-500/20'
-                    }`}>
+                    <div className={`w-14 h-14 rounded-full flex items-center justify-center text-2xl ${allSessionsConnected ? 'bg-green-500/20' :
+                            isConnected ? 'bg-green-500/20' : 'bg-red-500/20'
+                        }`}>
                         {allSessionsConnected ? '✅' : statusIcon}
                     </div>
                     <div>
@@ -237,11 +236,10 @@ function AccountCard({ account, status, sessionInfo, onReconnect }) {
                         </p>
                     </div>
                 </div>
-                <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                    allSessionsConnected ? 'bg-green-500/20 text-green-400' :
-                    isConnected ? 'bg-green-500/20 text-green-400' : 
-                    'bg-red-500/20 text-red-400'
-                }`}>
+                <span className={`px-3 py-1 rounded-full text-xs font-medium ${allSessionsConnected ? 'bg-green-500/20 text-green-400' :
+                        isConnected ? 'bg-green-500/20 text-green-400' :
+                            'bg-red-500/20 text-red-400'
+                    }`}>
                     {allSessionsConnected ? '4/4 ✓' : statusLabel}
                 </span>
             </div>
@@ -260,9 +258,9 @@ function AccountCard({ account, status, sessionInfo, onReconnect }) {
                             key={i}
                             className={`h-3 flex-1 rounded ${getSessionColor(i)}`}
                             title={
-                                i < connected ? `Session ${i+1}: Connected` :
-                                i < total ? `Session ${i+1}: Disconnected` :
-                                `Session ${i+1}: Not created`
+                                i < connected ? `Session ${i + 1}: Connected` :
+                                    i < total ? `Session ${i + 1}: Disconnected` :
+                                        `Session ${i + 1}: Not created`
                             }
                         />
                     ))}
@@ -285,7 +283,7 @@ function AccountCard({ account, status, sessionInfo, onReconnect }) {
                 <div className="flex justify-between text-sm">
                     <span className="text-gray-400">Total Sessions</span>
                     <span className={total === 4 ? 'text-green-400' : 'text-yellow-400'}>
-                        {total}/4 {total === 4 ? '✓' : `(need ${4-total} more)`}
+                        {total}/4 {total === 4 ? '✓' : `(need ${4 - total} more)`}
                     </span>
                 </div>
                 <div className="flex justify-between text-sm">
