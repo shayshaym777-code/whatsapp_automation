@@ -58,6 +58,9 @@ type ClientManager struct {
 
 	// Message counting for pauses
 	sessionMsgCount int // Messages sent in current session
+
+	// Heartbeat manager
+	heartbeat *HeartbeatManager
 }
 
 // AccountClient represents a connected WhatsApp account

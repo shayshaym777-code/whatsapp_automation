@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -78,6 +79,14 @@ func (s *Server) StartBackgroundServices(ctx context.Context) {
 	// Start human activity simulator for all connected accounts
 	s.client.StartAllActivitySimulators()
 	log.Printf("[STARTUP] Human activity simulator started")
+
+	// Start heartbeat system (keeps connections alive)
+	s.client.StartHeartbeat()
+	log.Printf("[STARTUP] Heartbeat system started")
+
+	// Setup message handlers for receiving messages
+	s.client.SetupAllMessageHandlers()
+	log.Printf("[STARTUP] Message receivers setup complete")
 }
 
 // GetClientManager returns the client manager (for external access if needed)
@@ -124,6 +133,10 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	// Activity endpoints
 	r.HandleFunc("/activity/logs", s.handleActivityLogs).Methods(http.MethodGet)
 	r.HandleFunc("/activity/logs/{phone}", s.handleActivityLogsForPhone).Methods(http.MethodGet)
+
+	// Received messages endpoints
+	r.HandleFunc("/messages/received", s.handleReceivedMessages).Methods(http.MethodGet)
+	r.HandleFunc("/messages/received/{phone}", s.handleReceivedMessagesForPhone).Methods(http.MethodGet)
 
 	// Proxy endpoints
 	r.HandleFunc("/proxy/stats", s.handleProxyStats).Methods(http.MethodGet)
@@ -570,13 +583,13 @@ func (s *Server) handleAccountsHealth(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		accounts = append(accounts, map[string]interface{}{
-			"phone":               phone,
-			"status":              health.Status,
-			"last_alive":          health.LastAlive,
-			"last_message_sent":   health.LastMessageSent,
-			"last_error":          health.LastError,
+			"phone":                phone,
+			"status":               health.Status,
+			"last_alive":           health.LastAlive,
+			"last_message_sent":    health.LastMessageSent,
+			"last_error":           health.LastError,
 			"consecutive_failures": health.ConsecutiveFailures,
-			"messages_today":      health.MessagesToday,
+			"messages_today":       health.MessagesToday,
 		})
 	}
 
@@ -641,5 +654,67 @@ func (s *Server) handleActivityLogsForPhone(w http.ResponseWriter, r *http.Reque
 		"phone":         phone,
 		"logs":          formatted,
 		"last_activity": lastActivityStr,
+	})
+}
+
+// GET /messages/received - Get recent received messages
+func (s *Server) handleReceivedMessages(w http.ResponseWriter, r *http.Request) {
+	limitStr := r.URL.Query().Get("limit")
+	limit := 50
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+
+	messages := s.client.GetReceivedMessages(limit)
+
+	formatted := make([]map[string]interface{}, len(messages))
+	for i, msg := range messages {
+		formatted[i] = map[string]interface{}{
+			"id":         msg.ID,
+			"from":       msg.From,
+			"to":         msg.To,
+			"message":    msg.Message,
+			"timestamp":  msg.Timestamp.Unix(),
+			"time":       msg.Timestamp.Format("15:04:05"),
+			"is_group":   msg.IsGroup,
+			"group_name": msg.GroupName,
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":  true,
+		"count":    len(messages),
+		"messages": formatted,
+	})
+}
+
+// GET /messages/received/{phone} - Get received messages for specific account
+func (s *Server) handleReceivedMessagesForPhone(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	phone := vars["phone"]
+
+	messages := s.client.GetReceivedMessagesForAccount(phone)
+
+	formatted := make([]map[string]interface{}, len(messages))
+	for i, msg := range messages {
+		formatted[i] = map[string]interface{}{
+			"id":         msg.ID,
+			"from":       msg.From,
+			"to":         msg.To,
+			"message":    msg.Message,
+			"timestamp":  msg.Timestamp.Unix(),
+			"time":       msg.Timestamp.Format("15:04:05"),
+			"is_group":   msg.IsGroup,
+			"group_name": msg.GroupName,
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":  true,
+		"phone":    phone,
+		"count":    len(messages),
+		"messages": formatted,
 	})
 }
