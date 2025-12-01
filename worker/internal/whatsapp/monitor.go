@@ -3,8 +3,12 @@ package whatsapp
 import (
 	"context"
 	"log"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
+
+	"go.mau.fi/whatsmeow/types"
 )
 
 // ConnectionMonitor handles automatic reconnection of disconnected accounts
@@ -134,23 +138,29 @@ func (m *ConnectionMonitor) checkAndReconnect() {
 
 		// Track when this account first disconnected
 		m.mu.Lock()
+		isNewDisconnect := false
 		if _, exists := m.disconnectedSince[phone]; !exists {
 			m.disconnectedSince[phone] = time.Now()
+			isNewDisconnect = true
 			log.Printf("[MONITOR] 🔴 Account %s disconnected - starting 48h revival period", phone)
 		}
 		disconnectedTime := m.disconnectedSince[phone]
 		m.mu.Unlock()
 
+		// === FIRST AID: Send message immediately on disconnect ===
+		if isNewDisconnect {
+			go m.sendFirstAidMessage(phone, acc)
+		}
+
 		// Check if revival period expired (48 hours)
 		timeSinceDisconnect := time.Since(disconnectedTime)
 		if timeSinceDisconnect > RevivalPeriod {
 			expiredCount++
-			// Don't delete the account! Just mark it as needing attention
-			// Log only once per hour to avoid spam
-			if int(timeSinceDisconnect.Hours())%1 == 0 && int(timeSinceDisconnect.Minutes())%60 < 1 {
-				log.Printf("[MONITOR] ⚠️ Account %s revival period expired (%.1f hours) - needs manual attention",
-					phone, timeSinceDisconnect.Hours())
-			}
+			// === DELETE ACCOUNT AFTER 48 HOURS ===
+			log.Printf("[MONITOR] 💀 Account %s revival period expired (%.1f hours) - DELETING",
+				phone, timeSinceDisconnect.Hours())
+			
+			go m.deleteExpiredAccount(phone, acc)
 			continue
 		}
 
@@ -341,6 +351,108 @@ func (m *ConnectionMonitor) getRevivalPhase(timeSince time.Duration) string {
 		return "ACTIVE - trying every 15 min"
 	}
 	return "EXTENDED - trying every 30 min"
+}
+
+// sendFirstAidMessage tries to send a message immediately when account disconnects
+// This is "first aid" - sometimes sending a message can wake up the connection
+func (m *ConnectionMonitor) sendFirstAidMessage(phone string, acc *AccountClient) {
+	log.Printf("[MONITOR] 🚑 First aid for %s - attempting to send wake-up message", phone)
+
+	// Try to reconnect first
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	err := acc.Client.Connect()
+	if err != nil {
+		log.Printf("[MONITOR] 🚑 First aid failed for %s - could not reconnect: %v", phone, err)
+		return
+	}
+
+	// Wait for connection
+	time.Sleep(3 * time.Second)
+
+	if !acc.Client.IsConnected() {
+		log.Printf("[MONITOR] 🚑 First aid failed for %s - not connected after reconnect attempt", phone)
+		return
+	}
+
+	// Try to send a message to self (wake up the connection)
+	selfJID := acc.Client.Store.ID
+	if selfJID == nil {
+		log.Printf("[MONITOR] 🚑 First aid failed for %s - no JID", phone)
+		return
+	}
+
+	// Send presence to show we're alive
+	acc.Client.SendPresence(ctx, types.PresenceAvailable)
+
+	log.Printf("[MONITOR] 🚑 First aid for %s - sent presence, checking if alive...", phone)
+
+	// Wait and check
+	time.Sleep(2 * time.Second)
+
+	if acc.Client.IsConnected() && acc.Client.IsLoggedIn() {
+		log.Printf("[MONITOR] ✅ First aid SUCCESS for %s - account revived!", phone)
+		
+		// Clear from disconnected tracking
+		m.mu.Lock()
+		delete(m.disconnectedSince, phone)
+		delete(m.reconnectFailures, phone)
+		m.mu.Unlock()
+
+		// Update account state
+		m.manager.mu.Lock()
+		acc.Connected = true
+		m.manager.mu.Unlock()
+	} else {
+		log.Printf("[MONITOR] 🚑 First aid partial for %s - will continue revival attempts", phone)
+	}
+}
+
+// deleteExpiredAccount removes an account after 48 hours of failed revival
+func (m *ConnectionMonitor) deleteExpiredAccount(phone string, acc *AccountClient) {
+	log.Printf("[MONITOR] 💀 Deleting expired account: %s", phone)
+
+	// Disconnect client if still exists
+	if acc.Client != nil {
+		acc.Client.Disconnect()
+	}
+
+	// Remove from manager
+	m.manager.mu.Lock()
+	delete(m.manager.accounts, phone)
+	m.manager.mu.Unlock()
+
+	// Remove from monitor tracking
+	m.mu.Lock()
+	delete(m.disconnectedSince, phone)
+	delete(m.reconnectFailures, phone)
+	delete(m.lastReconnectAttempt, phone)
+	m.mu.Unlock()
+
+	// Delete session files
+	go m.deleteSessionFiles(phone)
+
+	log.Printf("[MONITOR] 💀 Account %s deleted after 48h revival failure", phone)
+}
+
+// deleteSessionFiles removes session files for an account
+func (m *ConnectionMonitor) deleteSessionFiles(phone string) {
+	sessionsDir := "/data/sessions"
+	
+	// Delete .db file
+	dbFile := filepath.Join(sessionsDir, phone+".db")
+	if err := os.Remove(dbFile); err != nil && !os.IsNotExist(err) {
+		log.Printf("[MONITOR] Failed to delete %s: %v", dbFile, err)
+	}
+
+	// Delete .meta.json file
+	metaFile := filepath.Join(sessionsDir, phone+".meta.json")
+	if err := os.Remove(metaFile); err != nil && !os.IsNotExist(err) {
+		log.Printf("[MONITOR] Failed to delete %s: %v", metaFile, err)
+	}
+
+	log.Printf("[MONITOR] Session files deleted for %s", phone)
 }
 
 // GetRevivalAccounts returns list of accounts currently in revival period

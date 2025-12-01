@@ -588,7 +588,7 @@ router.post('/can-send', async (req, res, next) => {
 router.get('/alerts', async (req, res, next) => {
     try {
         const alerts = [];
-        
+
         // Check accounts
         let accounts = [];
         try {
@@ -618,7 +618,7 @@ router.get('/alerts', async (req, res, next) => {
         const newBornCount = accounts.filter(a => a.stage === 'new_born').length;
         const babyCount = accounts.filter(a => a.stage === 'baby').length;
         const weakAccountsCount = newBornCount + babyCount;
-        
+
         if (weakAccountsCount > 0 && weakAccountsCount === accounts.length) {
             alerts.push({
                 type: 'warning',
