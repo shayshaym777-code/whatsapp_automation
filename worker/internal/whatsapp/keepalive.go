@@ -297,11 +297,39 @@ func (m *ClientManager) sendKeepAliveMessages() {
 			stats.LastActionTime = time.Now()
 			log.Printf("[KeepAlive] 👆 Touch done: %s (stage: %s, touches: %d/%d)", 
 				acc.Phone, stage, stats.TouchesDone, config.TouchesPerDay)
-		} else if canSendMessage && len(keepAliveTargetPhones) > 0 {
-			// Send actual message to external number
-			targetPhone := keepAliveTargetPhones[rand.Intn(len(keepAliveTargetPhones))]
-			message := keepAliveMessages[rand.Intn(len(keepAliveMessages))]
+		} else if canSendMessage {
+			// For warmup/keep alive: prefer internal accounts first, then external
+			// New accounts (< 3 days) MUST only send to internal accounts!
+			var targetPhone string
+			var message string
 			
+			daysSinceCreation := time.Since(acc.CreatedAt).Hours() / 24
+			isNewAccount := daysSinceCreation < 3 || stage == "newborn" || stage == "infant"
+			
+			if isNewAccount {
+				// New accounts: ONLY internal accounts (warmup between friends)
+				targetPhone = m.getRandomInternalAccountForKeepAlive(acc.Phone)
+				if targetPhone == "" {
+					// No internal account available - do touch instead
+					m.performKeepAliveTouch(acc)
+					stats.TouchesDone++
+					stats.LastActionTime = time.Now()
+					log.Printf("[KeepAlive] 👆 Touch (no internal target): %s", acc.Phone)
+					continue
+				}
+				log.Printf("[KeepAlive] 🔥 Warmup (internal): %s -> %s", acc.Phone, targetPhone)
+			} else if len(keepAliveTargetPhones) > 0 {
+				// Older accounts: can send to external numbers
+				targetPhone = keepAliveTargetPhones[rand.Intn(len(keepAliveTargetPhones))]
+			} else {
+				// Fallback to internal
+				targetPhone = m.getRandomInternalAccountForKeepAlive(acc.Phone)
+				if targetPhone == "" {
+					continue
+				}
+			}
+			
+			message = keepAliveMessages[rand.Intn(len(keepAliveMessages))]
 			err := m.sendKeepAliveMessage(acc, targetPhone, message)
 			
 			if err != nil {
@@ -685,6 +713,36 @@ func (m *ClientManager) checkTempBlockedAccounts() {
 		// Small delay between checks
 		time.Sleep(5 * time.Second)
 	}
+}
+
+// getRandomInternalAccountForKeepAlive gets a random internal account for warmup
+// Only returns accounts that are connected and healthy
+func (m *ClientManager) getRandomInternalAccountForKeepAlive(excludePhone string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
+	var candidates []string
+	for phone, acc := range m.accounts {
+		if phone == excludePhone {
+			continue
+		}
+		if !acc.Connected || !acc.LoggedIn {
+			continue
+		}
+		// Check health - don't send to blocked accounts
+		if health := m.GetAccountHealth(phone); health != nil {
+			if health.Status == StatusBlocked || health.Status == StatusTempBlocked {
+				continue
+			}
+		}
+		candidates = append(candidates, phone)
+	}
+	
+	if len(candidates) == 0 {
+		return ""
+	}
+	
+	return candidates[rand.Intn(len(candidates))]
 }
 
 // SendTouchToBlockedAccount sends a presence touch to a restricted account

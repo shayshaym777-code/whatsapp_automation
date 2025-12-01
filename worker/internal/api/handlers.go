@@ -148,6 +148,7 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 
 	// Capacity endpoints
 	r.HandleFunc("/capacity", s.handleCapacity).Methods(http.MethodGet)
+	r.HandleFunc("/can-send", s.handleCanSend).Methods(http.MethodGet)
 
 	// Connection status endpoint
 	r.HandleFunc("/connections", s.handleConnections).Methods(http.MethodGet)
@@ -857,6 +858,66 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		"disconnected": disconnected,
 		"reconnecting": reconnecting,
 		"accounts":     connections,
+	})
+}
+
+// GET /can-send - Check if system is ready to send campaign messages
+// Returns healthy accounts count, alerts, and per-account status
+func (s *Server) handleCanSend(w http.ResponseWriter, r *http.Request) {
+	healthy, total, alerts := s.client.GetHealthyAccountsCount()
+	
+	// Get per-account campaign readiness
+	accounts := s.client.GetAccountStats()
+	accountStatus := make([]map[string]interface{}, 0)
+	
+	for _, acc := range accounts {
+		phone := acc["phone"].(string)
+		canSend, reason := s.client.CanSendCampaign(phone)
+		
+		accountStatus = append(accountStatus, map[string]interface{}{
+			"phone":       phone,
+			"can_send":    canSend,
+			"reason":      reason,
+			"stage":       acc["warmup_stage"],
+			"is_warmup":   acc["is_warmup"],
+			"is_unstable": acc["is_unstable"],
+		})
+	}
+	
+	// Calculate total power (capacity)
+	totalPower := 0
+	for _, acc := range accounts {
+		if acc["connected"].(bool) && !acc["is_unstable"].(bool) {
+			switch acc["warmup_stage"].(string) {
+			case "veteran":
+				totalPower += 200
+			case "adult":
+				totalPower += 100
+			case "teen":
+				totalPower += 50
+			case "toddler":
+				totalPower += 30
+			case "baby":
+				totalPower += 15
+			case "newborn", "new_born":
+				totalPower += 5
+			default:
+				totalPower += 50
+			}
+		}
+	}
+	
+	ready := healthy >= 1 && len(alerts) == 0
+	
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":          true,
+		"ready":            ready,
+		"worker_id":        s.WorkerID,
+		"healthy_accounts": healthy,
+		"total_accounts":   total,
+		"total_power":      totalPower,
+		"alerts":           alerts,
+		"accounts":         accountStatus,
 	})
 }
 

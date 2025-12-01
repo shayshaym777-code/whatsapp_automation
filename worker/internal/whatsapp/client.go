@@ -963,6 +963,16 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 		return nil, fmt.Errorf("account %s not logged in", fromPhone)
 	}
 
+	// === CHECK: Account health - don't send from blocked/suspicious accounts ===
+	if health := m.GetAccountHealth(fromPhone); health != nil {
+		if health.Status == StatusBlocked {
+			return nil, fmt.Errorf("account %s is BLOCKED - cannot send", fromPhone)
+		}
+		if health.Status == StatusTempBlocked {
+			return nil, fmt.Errorf("account %s is temporarily blocked - cannot send", fromPhone)
+		}
+	}
+
 	// === TRACKING: Update counters ===
 	m.resetCountersIfNeeded(acc)
 
@@ -973,7 +983,17 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 	}
 	isWarmup := acc.IsInWarmup
 	todayMsgs := acc.TotalMsgToday
+	createdAt := acc.CreatedAt
 	acc.mu.RUnlock()
+
+	// === CHECK: New account (< 3 days) can only do warmup, not campaigns ===
+	// This check is for external messages - warmup between internal accounts is allowed
+	daysSinceCreation := time.Since(createdAt).Hours() / 24
+	isInternalTarget := m.isInternalAccount(toPhone)
+	
+	if daysSinceCreation < 3 && !isInternalTarget {
+		return nil, fmt.Errorf("account %s is too new (%.1f days) - only warmup allowed for first 3 days", fromPhone, daysSinceCreation)
+	}
 
 	// === CHECK DAILY LIMIT (only for warmup accounts) ===
 	if isWarmup {
@@ -2018,6 +2038,106 @@ func (m *ClientManager) SetAccountWarmup(phone string, warmup bool) error {
 	}
 
 	return nil
+}
+
+// isInternalAccount checks if a phone number belongs to our system
+func (m *ClientManager) isInternalAccount(phone string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
+	// Normalize phone number
+	normalizedPhone := sanitizePhone(phone)
+	
+	for accPhone := range m.accounts {
+		if sanitizePhone(accPhone) == normalizedPhone {
+			return true
+		}
+	}
+	return false
+}
+
+// GetHealthyAccountsCount returns the number of healthy accounts ready to send
+func (m *ClientManager) GetHealthyAccountsCount() (healthy int, total int, alerts []string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
+	total = len(m.accounts)
+	
+	for phone, acc := range m.accounts {
+		if !acc.Connected || !acc.LoggedIn {
+			continue
+		}
+		
+		// Check health status
+		if health := m.GetAccountHealth(phone); health != nil {
+			if health.Status == StatusBlocked || health.Status == StatusTempBlocked {
+				continue
+			}
+		}
+		
+		// Check if account is unstable
+		if acc.IsUnstable {
+			continue
+		}
+		
+		healthy++
+	}
+	
+	// Generate alerts
+	if healthy == 0 {
+		alerts = append(alerts, "🚨 אין חשבונות זמינים לשליחה!")
+	} else if healthy < 3 {
+		alerts = append(alerts, fmt.Sprintf("⚠️ רק %d חשבונות זמינים - מומלץ להוסיף עוד", healthy))
+	}
+	
+	if total > 0 && float64(healthy)/float64(total) < 0.5 {
+		alerts = append(alerts, fmt.Sprintf("⚠️ רק %.0f%% מהחשבונות פעילים", float64(healthy)/float64(total)*100))
+	}
+	
+	return healthy, total, alerts
+}
+
+// CanSendCampaign checks if an account can send campaign messages (not just warmup)
+func (m *ClientManager) CanSendCampaign(phone string) (bool, string) {
+	m.mu.RLock()
+	acc, exists := m.accounts[phone]
+	m.mu.RUnlock()
+	
+	if !exists {
+		return false, "account not found"
+	}
+	
+	if !acc.Connected || !acc.LoggedIn {
+		return false, "account not connected"
+	}
+	
+	// Check health
+	if health := m.GetAccountHealth(phone); health != nil {
+		if health.Status == StatusBlocked {
+			return false, "account is BLOCKED"
+		}
+		if health.Status == StatusTempBlocked {
+			return false, "account is temporarily blocked"
+		}
+	}
+	
+	// Check if account is unstable
+	if acc.IsUnstable {
+		return false, "account is unstable (too many disconnects)"
+	}
+	
+	// Check account age - must be at least 3 days old
+	daysSinceCreation := time.Since(acc.CreatedAt).Hours() / 24
+	if daysSinceCreation < 3 {
+		return false, fmt.Sprintf("account too new (%.1f days) - need 3 days warmup", daysSinceCreation)
+	}
+	
+	// Check if still in newborn stage
+	if acc.WarmupStage == "newborn" || acc.WarmupStage == "new_born" {
+		return false, "account still in newborn stage - only warmup allowed"
+	}
+	
+	return true, ""
 }
 
 // registerWithMaster registers a new account with the Master server for warmup tracking
