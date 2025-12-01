@@ -214,9 +214,10 @@ func (m *ClientManager) StartHumanActivitySimulator(phone string) {
 					log.Printf("[Activity] 🐢 Light touch for unstable account %s", phone)
 					// Just send presence - very light activity
 					if acc.Client != nil {
-						_ = acc.Client.SendPresence(types.PresenceAvailable)
+						ctx := context.Background()
+						_ = acc.Client.SendPresence(ctx, types.PresenceAvailable)
 						time.Sleep(2 * time.Second)
-						_ = acc.Client.SendPresence(types.PresenceUnavailable)
+						_ = acc.Client.SendPresence(ctx, types.PresenceUnavailable)
 					}
 					continue
 				}
@@ -225,9 +226,10 @@ func (m *ClientManager) StartHumanActivitySimulator(phone string) {
 				if health := m.GetAccountHealth(phone); health != nil && health.Status == StatusTempBlocked {
 					log.Printf("[Activity] 👆 Touch for temp-blocked account %s", phone)
 					if acc != nil && acc.Client != nil {
-						_ = acc.Client.SendPresence(types.PresenceAvailable)
+						ctx := context.Background()
+						_ = acc.Client.SendPresence(ctx, types.PresenceAvailable)
 						time.Sleep(1 * time.Second)
-						_ = acc.Client.SendPresence(types.PresenceUnavailable)
+						_ = acc.Client.SendPresence(ctx, types.PresenceUnavailable)
 					}
 					continue
 				}
