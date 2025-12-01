@@ -74,6 +74,10 @@ func (s *Server) StartBackgroundServices(ctx context.Context) {
 	// Start keep alive scheduler (sends messages every hour, checks health every 5 min)
 	s.client.StartKeepAlive()
 	log.Printf("[STARTUP] Keep alive system started")
+
+	// Start human activity simulator for all connected accounts
+	s.client.StartAllActivitySimulators()
+	log.Printf("[STARTUP] Human activity simulator started")
 }
 
 // GetClientManager returns the client manager (for external access if needed)
@@ -116,6 +120,10 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 
 	// Health endpoints
 	r.HandleFunc("/accounts/health", s.handleAccountsHealth).Methods(http.MethodGet)
+
+	// Activity endpoints
+	r.HandleFunc("/activity/logs", s.handleActivityLogs).Methods(http.MethodGet)
+	r.HandleFunc("/activity/logs/{phone}", s.handleActivityLogsForPhone).Methods(http.MethodGet)
 
 	// Proxy endpoints
 	r.HandleFunc("/proxy/stats", s.handleProxyStats).Methods(http.MethodGet)
@@ -575,5 +583,63 @@ func (s *Server) handleAccountsHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success":  true,
 		"accounts": accounts,
+	})
+}
+
+// GET /activity/logs - Get activity logs for all accounts
+func (s *Server) handleActivityLogs(w http.ResponseWriter, r *http.Request) {
+	allLogs := s.client.GetAllActivityLogs()
+
+	// Format for response
+	result := make(map[string][]map[string]interface{})
+	for phone, logs := range allLogs {
+		formatted := make([]map[string]interface{}, len(logs))
+		for i, log := range logs {
+			formatted[i] = map[string]interface{}{
+				"time":        log.Time.Format("15:04:05"),
+				"timestamp":   log.Time.Unix(),
+				"activity":    log.Activity,
+				"description": log.Description,
+				"details":     log.Details,
+			}
+		}
+		result[phone] = formatted
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"logs":    result,
+	})
+}
+
+// GET /activity/logs/{phone} - Get activity logs for a specific account
+func (s *Server) handleActivityLogsForPhone(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	phone := vars["phone"]
+
+	logs := s.client.GetActivityLogs(phone)
+
+	formatted := make([]map[string]interface{}, len(logs))
+	for i, log := range logs {
+		formatted[i] = map[string]interface{}{
+			"time":        log.Time.Format("15:04:05"),
+			"timestamp":   log.Time.Unix(),
+			"activity":    log.Activity,
+			"description": log.Description,
+			"details":     log.Details,
+		}
+	}
+
+	lastActivity := s.client.GetLastActivity(phone)
+	var lastActivityStr string
+	if lastActivity != nil {
+		lastActivityStr = lastActivity.Format("15:04:05")
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":       true,
+		"phone":         phone,
+		"logs":          formatted,
+		"last_activity": lastActivityStr,
 	})
 }
