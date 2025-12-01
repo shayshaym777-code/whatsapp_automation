@@ -163,7 +163,7 @@ function Accounts() {
 // v8.0: Simplified Account Card
 function AccountCard({ account, status, onReconnect }) {
     const countryFlags = { US: '🇺🇸', IL: '🇮🇱', GB: '🇬🇧' }
-    
+
     const isConnected = status === 'CONNECTED'
     const statusColor = isConnected ? 'green' : 'red'
     const statusIcon = isConnected ? '🟢' : '🔴'
@@ -188,11 +188,10 @@ function AccountCard({ account, status, onReconnect }) {
                         </p>
                     </div>
                 </div>
-                <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                    isConnected 
-                        ? 'bg-green-500/20 text-green-400' 
+                <span className={`px-3 py-1 rounded-full text-xs font-medium ${isConnected
+                        ? 'bg-green-500/20 text-green-400'
                         : 'bg-red-500/20 text-red-400'
-                }`}>
+                    }`}>
                     {statusLabel}
                 </span>
             </div>

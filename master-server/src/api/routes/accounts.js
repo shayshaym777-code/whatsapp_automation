@@ -6,19 +6,26 @@ const router = Router();
 
 // v8.0: Simple status - CONNECTED (🟢) or DISCONNECTED (🔴)
 // At least 1 session connected = CONNECTED
+// Blocked in last 48h = BLOCKED
 
 // Worker URLs
 const WORKERS = [
     { id: 'worker-1', url: process.env.WORKER_1_URL || 'http://worker-1:3001', country: 'US' },
     { id: 'worker-2', url: process.env.WORKER_2_URL || 'http://worker-2:3001', country: 'IL' },
     { id: 'worker-3', url: process.env.WORKER_3_URL || 'http://worker-3:3001', country: 'GB' },
-    { id: 'worker-4', url: process.env.WORKER_4_URL || 'http://worker-4:3001', country: 'US' },
 ];
 
-// Helper: Get account status based on sessions
-// 🟢 CONNECTED = at least 1 session connected
-// 🔴 DISCONNECTED = all sessions down
-function getAccountStatus(connectedSessions) {
+// Helper: Get account status based on sessions and blocked_at
+function getAccountStatus(connectedSessions, blockedAt) {
+    // If blocked in last 48 hours
+    if (blockedAt) {
+        const blockedTime = new Date(blockedAt);
+        const hoursSinceBlocked = (Date.now() - blockedTime.getTime()) / (1000 * 60 * 60);
+        if (hoursSinceBlocked < 48) {
+            return 'BLOCKED';
+        }
+    }
+    // At least 1 session connected = CONNECTED
     return connectedSessions > 0 ? 'CONNECTED' : 'DISCONNECTED';
 }
 
@@ -26,9 +33,14 @@ function getAccountStatus(connectedSessions) {
 router.get('/', async (req, res, next) => {
     try {
         const result = await query(`
-            SELECT a.phone, a.country, a.proxy_id, a.messages_today,
-                   (SELECT COUNT(*) FROM sessions s WHERE s.phone = a.phone) as total_sessions,
-                   (SELECT COUNT(*) FROM sessions s WHERE s.phone = a.phone AND s.status = 'CONNECTED') as connected_sessions
+            SELECT 
+                a.phone, 
+                a.country, 
+                a.proxy_id, 
+                a.messages_today,
+                a.blocked_at,
+                (SELECT COUNT(*) FROM sessions s WHERE s.phone = a.phone) as total_sessions,
+                (SELECT COUNT(*) FROM sessions s WHERE s.phone = a.phone AND s.status = 'CONNECTED') as connected_sessions
             FROM accounts a
             ORDER BY a.created_at DESC
         `);
@@ -36,9 +48,11 @@ router.get('/', async (req, res, next) => {
         const accounts = result.rows.map(a => {
             const connected = parseInt(a.connected_sessions) || 0;
             const total = parseInt(a.total_sessions) || 0;
+            const status = getAccountStatus(connected, a.blocked_at);
+            
             return {
                 phone: a.phone,
-                status: getAccountStatus(connected),  // 🟢 or 🔴
+                status: status,  // 🟢 CONNECTED, 🔴 DISCONNECTED, or BLOCKED
                 sessions: `${connected}/${total}`,    // "3/4"
                 connected_sessions: connected,
                 total_sessions: total,
@@ -48,10 +62,12 @@ router.get('/', async (req, res, next) => {
         });
 
         const connectedCount = accounts.filter(a => a.status === 'CONNECTED').length;
+        const blockedCount = accounts.filter(a => a.status === 'BLOCKED').length;
 
         res.json({
             accounts,
             total_connected: connectedCount,
+            total_blocked: blockedCount,
             total_accounts: accounts.length
         });
     } catch (err) {
@@ -64,7 +80,8 @@ router.get('/:phone', async (req, res, next) => {
     try {
         const result = await query(`
             SELECT a.*, 
-                   (SELECT COUNT(*) FROM sessions s WHERE s.phone = a.phone AND s.status = 'CONNECTED') as sessions
+                   (SELECT COUNT(*) FROM sessions s WHERE s.phone = a.phone) as total_sessions,
+                   (SELECT COUNT(*) FROM sessions s WHERE s.phone = a.phone AND s.status = 'CONNECTED') as connected_sessions
             FROM accounts a
             WHERE a.phone = $1
         `, [req.params.phone]);
@@ -73,7 +90,17 @@ router.get('/:phone', async (req, res, next) => {
             return res.status(404).json({ error: 'Account not found' });
         }
 
-        res.json(result.rows[0]);
+        const a = result.rows[0];
+        const connected = parseInt(a.connected_sessions) || 0;
+        const total = parseInt(a.total_sessions) || 0;
+
+        res.json({
+            ...a,
+            status: getAccountStatus(connected, a.blocked_at),
+            sessions: `${connected}/${total}`,
+            connected_sessions: connected,
+            total_sessions: total
+        });
     } catch (err) {
         next(err);
     }
@@ -89,8 +116,8 @@ router.post('/', async (req, res, next) => {
         }
 
         const result = await query(`
-            INSERT INTO accounts (phone, country, proxy_id, status)
-            VALUES ($1, $2, $3, 'HEALTHY')
+            INSERT INTO accounts (phone, country, proxy_id)
+            VALUES ($1, $2, $3)
             ON CONFLICT (phone) DO UPDATE SET
                 country = COALESCE($2, accounts.country),
                 proxy_id = COALESCE($3, accounts.proxy_id)
@@ -103,12 +130,12 @@ router.post('/', async (req, res, next) => {
     }
 });
 
-// PUT /api/accounts/:phone/block - Mark as blocked
+// PUT /api/accounts/:phone/block - Mark as blocked (don't use for 48h)
 router.put('/:phone/block', async (req, res, next) => {
     try {
         const result = await query(`
             UPDATE accounts 
-            SET status = 'BLOCKED', blocked_at = NOW()
+            SET blocked_at = NOW()
             WHERE phone = $1
             RETURNING *
         `, [req.params.phone]);
@@ -128,7 +155,7 @@ router.put('/:phone/unblock', async (req, res, next) => {
     try {
         const result = await query(`
             UPDATE accounts 
-            SET status = 'HEALTHY', blocked_at = NULL
+            SET blocked_at = NULL
             WHERE phone = $1
             RETURNING *
         `, [req.params.phone]);
