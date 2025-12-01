@@ -40,27 +40,20 @@ const (
 	DefaultSessionsDir = "./sessions"
 )
 
-// ClientManager manages WhatsApp client connections for multiple accounts
+// v8.0: Simplified ClientManager - no warmup, no stages
+
+// ClientManager manages WhatsApp client connections
 type ClientManager struct {
 	Fingerprint  fingerprint.DeviceFingerprint
 	ProxyCountry string
 	WorkerID     string
 
-	// Account management
-	accounts map[string]*AccountClient // phone -> client
+	accounts map[string]*AccountClient
 	mu       sync.RWMutex
 
-	// Auto warmup control
-	warmupStop chan struct{}
-
-	// Proxy configuration
 	proxyConfig *config.ProxyConfig
-	proxyPool   *config.ProxyPool // Pool for proxy rotation
+	proxyPool   *config.ProxyPool
 
-	// Message counting for pauses
-	sessionMsgCount int // Messages sent in current session
-
-	// Heartbeat manager
 	heartbeat *HeartbeatManager
 }
 
@@ -71,46 +64,30 @@ type AccountClient struct {
 	Container *sqlstore.Container
 	Connected bool
 	LoggedIn  bool
-	QRCode    string // Base64 QR code if pending login
-	QRPath    string // Path to QR code image
+	QRCode    string
+	QRPath    string
 
-	// State tracking to reduce log spam
+	// State tracking
 	lastConnectedState bool
 	lastLoggedInState  bool
 	lastStateChange    time.Time
+	CreatedAt          time.Time
 
-	// Warmup tracking for new accounts
-	CreatedAt      time.Time // When account was first connected
-	LastWarmupSent time.Time // Last warmup message time
-	WarmupComplete bool      // True after 3 days of warmup
-	WarmupStage    string    // Current stage: new_born, baby, teen, adult
-	IsInWarmup     bool      // TRUE = new account with daily limits, FALSE = no limits
-	IsNew          bool      // TRUE = marked as new device (3 day warmup), FALSE = ready immediately
-
-	// Message tracking for pauses and limits
-	SessionMsgCount int       // Messages sent in current session (reset on pause)
-	TotalMsgToday   int       // Total messages sent today
-	HourMsgCount    int       // Messages sent this hour
-	LastHourReset   time.Time // When hourly count was last reset
-	LastDayReset    time.Time // When daily count was last reset
+	// Message counting for anti-ban pauses
+	SessionMsgCount int
+	TotalMsgToday   int
+	LastDayReset    time.Time
 
 	// Health tracking
-	LastError           string    // Last error message
-	ConsecutiveFailures int       // Number of consecutive failures
-	BannedUntil         time.Time // If temp banned, when it expires
+	LastError           string
+	ConsecutiveFailures int
+	BannedUntil         time.Time
 
-	// Disconnect tracking - to detect unstable accounts
-	DisconnectCount      int       // Number of disconnects today
-	LastDisconnect       time.Time // Last disconnect time
-	DisconnectCountReset time.Time // When disconnect count was last reset
-	IsUnstable           bool      // True if account is unstable (many disconnects)
+	// Delivery tracking
+	MessagesSent      int
+	MessagesDelivered int
+	MessagesFailed    int
 
-	// Delivery Rate tracking
-	MessagesSent      int // Messages sent today
-	MessagesDelivered int // Messages delivered (got receipt)
-	MessagesFailed    int // Messages that failed
-
-	// Mutex for thread-safe access
 	mu sync.RWMutex
 }
 
@@ -714,26 +691,6 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 		acc.Connected = false
 		acc.lastConnectedState = false
 		acc.lastStateChange = time.Now()
-
-		// Track disconnects to detect unstable accounts
-		today := time.Now().Format("2006-01-02")
-		resetDay := acc.DisconnectCountReset.Format("2006-01-02")
-		if today != resetDay {
-			acc.DisconnectCount = 0
-			acc.DisconnectCountReset = time.Now()
-			acc.IsUnstable = false
-		}
-		acc.DisconnectCount++
-		acc.LastDisconnect = time.Now()
-
-		// Mark as unstable if too many disconnects (more than 10 per day)
-		if acc.DisconnectCount > 10 {
-			if !acc.IsUnstable {
-				log.Printf("[%s] ⚠️ Account marked as UNSTABLE (%d disconnects today)", phone, acc.DisconnectCount)
-			}
-			acc.IsUnstable = true
-		}
-
 		m.mu.Unlock()
 
 		// Update health
@@ -741,26 +698,14 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 			health.Status = StatusDisconnected
 		}
 
-		// Attempt reconnect with random delay (only if was logged in)
-		// Unstable accounts get longer delays to reduce server load
+		// v8.0: Simple reconnect - 5-25 seconds delay
 		if acc.LoggedIn {
-			go func(p string, unstable bool, disconnects int, workerID string) {
-				var delay time.Duration
-				if unstable {
-					// Unstable accounts: wait longer (1-3 minutes)
-					delay = time.Duration(rand.Intn(120)+60) * time.Second
-					log.Printf("[%s] Unstable account, will attempt reconnect in %v (disconnects: %d)", p, delay, disconnects)
-				} else {
-					// Normal accounts: 5-25 seconds
-					delay = time.Duration(rand.Intn(20)+5) * time.Second
-					log.Printf("[%s] Will attempt reconnect in %v", p, delay)
-				}
+			go func(p string) {
+				delay := time.Duration(rand.Intn(20)+5) * time.Second
+				log.Printf("[%s] Will attempt reconnect in %v", p, delay)
 				time.Sleep(delay)
-
-				// Try reconnect
 				m.attemptSmartReconnect(p)
-				// Note: AlertReconnected is called inside attemptSmartReconnect on success
-			}(phone, acc.IsUnstable, acc.DisconnectCount, m.WorkerID)
+			}(phone)
 		}
 
 	case *events.KeepAliveTimeout:
@@ -949,7 +894,9 @@ func (m *ClientManager) attemptSmartReconnect(phone string) {
 
 // SendMessage sends a text message from one account to a recipient
 // Includes anti-ban measures: typing simulation, message variation, pauses, proxy rotation
-func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, message string) (*SendResult, error) {
+// SendMessage sends a message with anti-ban measures
+// v8.0: Simplified - no warmup checks, just anti-ban
+func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, message string, name ...string) (*SendResult, error) {
 	m.mu.RLock()
 	acc, exists := m.accounts[fromPhone]
 	m.mu.RUnlock()
@@ -962,43 +909,10 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 		return nil, fmt.Errorf("account %s not logged in", fromPhone)
 	}
 
-	// === CHECK: Account health - don't send from blocked/suspicious accounts ===
+	// Check if blocked
 	if health := m.GetAccountHealth(fromPhone); health != nil {
 		if health.Status == StatusBlocked {
-			return nil, fmt.Errorf("account %s is BLOCKED - cannot send", fromPhone)
-		}
-		if health.Status == StatusTempBlocked {
-			return nil, fmt.Errorf("account %s is temporarily blocked - cannot send", fromPhone)
-		}
-	}
-
-	// === TRACKING: Update counters ===
-	m.resetCountersIfNeeded(acc)
-
-	acc.mu.RLock()
-	stage := acc.WarmupStage
-	if stage == "" {
-		stage = "adult" // Default stage
-	}
-	isWarmup := acc.IsInWarmup
-	todayMsgs := acc.TotalMsgToday
-	createdAt := acc.CreatedAt
-	acc.mu.RUnlock()
-
-	// === CHECK: New account (< 3 days) can only do warmup, not campaigns ===
-	// This check is for external messages - warmup between internal accounts is allowed
-	daysSinceCreation := time.Since(createdAt).Hours() / 24
-	isInternalTarget := m.isInternalAccount(toPhone)
-
-	if daysSinceCreation < 3 && !isInternalTarget {
-		return nil, fmt.Errorf("account %s is too new (%.1f days) - only warmup allowed for first 3 days", fromPhone, daysSinceCreation)
-	}
-
-	// === CHECK DAILY LIMIT (only for warmup accounts) ===
-	if isWarmup {
-		dailyLimit := getDailyLimitForStage(stage)
-		if todayMsgs >= dailyLimit {
-			return nil, fmt.Errorf("daily limit reached for warmup account %s (sent: %d, limit: %d)", fromPhone, todayMsgs, dailyLimit)
+			return nil, fmt.Errorf("account %s is BLOCKED - do not use for 48h", fromPhone)
 		}
 	}
 
@@ -1008,24 +922,28 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 		return nil, fmt.Errorf("invalid recipient phone: %w", err)
 	}
 
-	// === ANTI-BAN: Apply message variation ===
-	variedMessage := applyMessageVariation(message)
+	// Get name for {name} replacement
+	contactName := ""
+	if len(name) > 0 {
+		contactName = name[0]
+	}
 
-	// === ANTI-BAN: Get stage-based delay ===
+	// === ANTI-BAN: Apply message variation ===
+	variedMessage := applyMessageVariationWithName(message, contactName)
+
+	// === ANTI-BAN: Get message count for pauses ===
 	acc.mu.RLock()
 	sessionCount := acc.SessionMsgCount
 	acc.mu.RUnlock()
 
-	stageDelay := getDelayByStage(stage)
+	// === ANTI-BAN: Random delay 2-4 seconds + jitter ===
+	baseDelay := getRandomDelay()
 
-	// === ANTI-BAN: Simulate typing (human-like delay) ===
-	typingDelay := calculateTypingDelay(variedMessage)
+	// === ANTI-BAN: Typing simulation (1-3 seconds) ===
+	typingDelay := getTypingDuration()
 
-	// Total delay = stage delay + typing simulation
-	totalDelay := stageDelay + typingDelay
-
-	// === ANTI-BAN: Apply pauses every 10/50/100 messages ===
-	pauseDelay := m.applyPauses(sessionCount + 1)
+	// === ANTI-BAN: Pauses every 10/50/100 messages ===
+	pauseDelay := getPauseDuration(sessionCount + 1)
 	if pauseDelay > 0 {
 		log.Printf("[%s] Taking a break: %v (after %d messages)", fromPhone, pauseDelay, sessionCount+1)
 		select {
@@ -1035,26 +953,25 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 		}
 	}
 
-	// === ANTI-BAN: Get rotating proxy ===
-	proxy := m.proxyPool.GetProxyForMessage()
-	proxyInfo := "none"
-	if proxy.Enabled {
-		proxyInfo = proxy.String()
-	}
-
-	// Send "composing" presence to show typing indicator
+	// === ANTI-BAN: Send typing indicator ===
 	if err := acc.Client.SendPresence(ctx, types.PresenceAvailable); err != nil {
 		log.Printf("[%s] Failed to send presence: %v", fromPhone, err)
 	}
 
-	log.Printf("[%s] Sending to %s (stage: %s, delay: %v, proxy: %s)",
-		fromPhone, toPhone, stage, totalDelay, proxyInfo)
-
-	// Wait for total delay
+	// Wait for typing simulation
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-time.After(totalDelay):
+	case <-time.After(typingDelay):
+	}
+
+	log.Printf("[%s] Sending to %s (delay: %v)", fromPhone, toPhone, baseDelay)
+
+	// Wait for base delay
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(baseDelay):
 	}
 
 	// Create message
@@ -1086,14 +1003,8 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 	acc.mu.Lock()
 	acc.SessionMsgCount++
 	acc.TotalMsgToday++
-	acc.HourMsgCount++
-	acc.MessagesSent++ // Track for delivery rate
+	acc.MessagesSent++
 	acc.mu.Unlock()
-
-	// Also increment session-wide counter
-	m.mu.Lock()
-	m.sessionMsgCount++
-	m.mu.Unlock()
 
 	log.Printf("[%s] ✅ Message sent to %s (session: %d, today: %d)",
 		fromPhone, toPhone, acc.SessionMsgCount, acc.TotalMsgToday)
@@ -1139,21 +1050,12 @@ type StageLimits struct {
 	MaxHour int
 }
 
-// resetCountersIfNeeded resets hourly and daily counters when time passes
+// resetCountersIfNeeded resets daily counters
 func (m *ClientManager) resetCountersIfNeeded(acc *AccountClient) {
 	now := time.Now()
 
 	acc.mu.Lock()
 	defer acc.mu.Unlock()
-
-	// Reset hourly counter if new hour
-	if now.Hour() != acc.LastHourReset.Hour() || now.Sub(acc.LastHourReset) > time.Hour {
-		if acc.HourMsgCount > 0 {
-			log.Printf("[%s] Hourly counter reset (was %d)", acc.Phone, acc.HourMsgCount)
-		}
-		acc.HourMsgCount = 0
-		acc.LastHourReset = now
-	}
 
 	// Reset daily counter if new day
 	today := now.Format("2006-01-02")
@@ -1246,50 +1148,127 @@ func isProxyError(err error) bool {
 }
 
 // applyMessageVariation adds invisible characters for uniqueness
-func applyMessageVariation(message string) string {
-	// Zero-width characters for invisible variation
-	zeroWidth := []string{
-		"\u200B", // Zero-width space
-		"\u200C", // Zero-width non-joiner
-		"\u200D", // Zero-width joiner
-	}
+// v8.0 Anti-Ban Functions
 
-	// Add 1-2 invisible characters at random positions
+// Random emojis for 30% of messages
+var randomEmojis = []string{
+	"😊", "👍", "🙏", "✨", "💪", "🎉", "👋", "😄",
+	"🔥", "💯", "⭐", "🌟", "💫", "🙌", "👏", "❤️",
+}
+
+// applyMessageVariationWithName applies all anti-ban variations
+// 1. Process spin tags: {Hello|Hi|Hey} → random choice
+// 2. Replace {name} with contact name
+// 3. Add zero-width characters
+// 4. Add random emoji (30%)
+func applyMessageVariationWithName(message string, name string) string {
 	result := message
-	numChars := 1 + rand.Intn(2)
 
-	for i := 0; i < numChars; i++ {
-		char := zeroWidth[rand.Intn(len(zeroWidth))]
-		pos := rand.Intn(len(result) + 1)
-		result = result[:pos] + char + result[pos:]
+	// 1. Process spin tags {option1|option2|option3}
+	result = processSpinTags(result)
+
+	// 2. Replace {name}
+	result = strings.ReplaceAll(result, "{name}", name)
+
+	// 3. Add zero-width characters (invisible)
+	result = addZeroWidthChars(result)
+
+	// 4. Add random emoji (30% chance)
+	if rand.Float64() < 0.3 {
+		result = result + " " + randomEmojis[rand.Intn(len(randomEmojis))]
 	}
 
 	return result
 }
 
-// getWarmupStage determines the warmup stage based on account age
-func getWarmupStage(acc *AccountClient) string {
-	if acc.WarmupComplete {
-		daysSinceCreation := time.Since(acc.CreatedAt).Hours() / 24
-		if daysSinceCreation >= 60 {
-			return "veteran"
+// processSpinTags handles {option1|option2|option3} syntax
+func processSpinTags(text string) string {
+	// Simple implementation - find {word|word|word} patterns
+	result := text
+	for {
+		start := strings.Index(result, "{")
+		if start == -1 {
+			break
 		}
-		return "adult"
-	}
+		end := strings.Index(result[start:], "}")
+		if end == -1 {
+			break
+		}
+		end += start
 
-	daysSinceCreation := time.Since(acc.CreatedAt).Hours() / 24
+		inner := result[start+1 : end]
+		if !strings.Contains(inner, "|") {
+			// Not a spin tag (might be {name}), skip
+			break
+		}
 
-	if daysSinceCreation <= 3 {
-		return "new_born"
-	} else if daysSinceCreation <= 7 {
-		return "baby"
-	} else if daysSinceCreation <= 14 {
-		return "toddler"
-	} else if daysSinceCreation <= 30 {
-		return "teen"
+		options := strings.Split(inner, "|")
+		choice := options[rand.Intn(len(options))]
+		result = result[:start] + choice + result[end+1:]
 	}
-	return "adult"
+	return result
 }
+
+// addZeroWidthChars adds invisible characters for uniqueness
+func addZeroWidthChars(text string) string {
+	zeroWidth := []string{
+		"\u200B", // Zero-width space
+		"\u200C", // Zero-width non-joiner
+		"\u200D", // Zero-width joiner
+		"\uFEFF", // Zero-width no-break space
+	}
+
+	// Add 2-4 random zero-width chars at the end
+	count := 2 + rand.Intn(3)
+	for i := 0; i < count; i++ {
+		text += zeroWidth[rand.Intn(len(zeroWidth))]
+	}
+	return text
+}
+
+// getRandomDelay returns 2-4 seconds + jitter
+func getRandomDelay() time.Duration {
+	base := 2.0 + rand.Float64()*2.0 // 2-4 seconds
+	jitter := (rand.Float64() - 0.5) // -0.5 to +0.5
+	total := base + jitter
+	if total < 1.5 {
+		total = 1.5
+	}
+	return time.Duration(total * float64(time.Second))
+}
+
+// getTypingDuration returns 1-3 seconds for typing simulation
+func getTypingDuration() time.Duration {
+	seconds := 1 + rand.Intn(3) // 1, 2, or 3 seconds
+	return time.Duration(seconds) * time.Second
+}
+
+// getPauseDuration returns pause based on message count
+// Every 10: 10-30 seconds
+// Every 50: 2-5 minutes
+// Every 100: 5-10 minutes
+func getPauseDuration(msgCount int) time.Duration {
+	if msgCount > 0 && msgCount%100 == 0 {
+		pause := 300 + rand.Intn(300) // 5-10 min
+		return time.Duration(pause) * time.Second
+	}
+	if msgCount > 0 && msgCount%50 == 0 {
+		pause := 120 + rand.Intn(180) // 2-5 min
+		return time.Duration(pause) * time.Second
+	}
+	if msgCount > 0 && msgCount%10 == 0 {
+		pause := 10 + rand.Intn(20) // 10-30 sec
+		return time.Duration(pause) * time.Second
+	}
+	return 0
+}
+
+// Legacy function for backward compatibility
+func applyMessageVariation(message string) string {
+	return applyMessageVariationWithName(message, "")
+}
+
+// v8.0: Removed getWarmupStage - no more stages
 
 // calculateTypingDelay simulates human typing speed (additional to stage delay)
 func calculateTypingDelay(message string) time.Duration {
@@ -1662,15 +1641,7 @@ func (m *ClientManager) loadAndValidateSession(ctx context.Context, phone string
 	m.accounts[phone] = acc
 	m.mu.Unlock()
 
-	// Log warmup status
-	if !acc.WarmupComplete {
-		accountAge := time.Since(acc.CreatedAt)
-		remainingWarmup := (3 * 24 * time.Hour) - accountAge
-		if remainingWarmup > 0 {
-			log.Printf("[%s] Account in warmup period - %v remaining", phone, remainingWarmup.Round(time.Hour))
-		}
-	}
-
+	// v8.0: No warmup logging
 	return true, nil
 }
 
@@ -1699,12 +1670,9 @@ func parseJID(phone string) (types.JID, error) {
 	return types.NewJID(phone, types.DefaultUserServer), nil
 }
 
-// AccountMeta stores persistent metadata about an account
+// AccountMeta stores persistent metadata about an account (v8.0 simplified)
 type AccountMeta struct {
-	CreatedAt      string `json:"created_at"`
-	LastWarmupSent string `json:"last_warmup_sent,omitempty"`
-	WarmupComplete bool   `json:"warmup_complete"`
-	WarmupStage    string `json:"warmup_stage,omitempty"` // Current warmup stage
+	CreatedAt string `json:"created_at"`
 }
 
 // saveAccountMeta saves account metadata to a JSON file
@@ -1713,12 +1681,7 @@ func (m *ClientManager) saveAccountMeta(phone string, acc *AccountClient) error 
 
 	acc.mu.RLock()
 	meta := AccountMeta{
-		CreatedAt:      acc.CreatedAt.Format(time.RFC3339),
-		WarmupComplete: acc.WarmupComplete,
-		WarmupStage:    acc.WarmupStage,
-	}
-	if !acc.LastWarmupSent.IsZero() {
-		meta.LastWarmupSent = acc.LastWarmupSent.Format(time.RFC3339)
+		CreatedAt: acc.CreatedAt.Format(time.RFC3339),
 	}
 	acc.mu.RUnlock()
 
@@ -1731,7 +1694,6 @@ func (m *ClientManager) saveAccountMeta(phone string, acc *AccountClient) error 
 		return fmt.Errorf("failed to write meta file: %w", err)
 	}
 
-	log.Printf("[%s] Saved account meta (stage: %s)", phone, acc.WarmupStage)
 	return nil
 }
 
@@ -1765,102 +1727,21 @@ func (m *ClientManager) loadAccountMeta(phone string) *AccountMeta {
 	return &meta
 }
 
-// applyAccountMeta applies loaded metadata to an account
+// applyAccountMeta applies loaded metadata to an account (v8.0 simplified)
 func (m *ClientManager) applyAccountMeta(acc *AccountClient, meta *AccountMeta) {
 	if meta == nil {
-		// New account - set CreatedAt to now
 		acc.CreatedAt = time.Now()
-		acc.WarmupComplete = false
 		return
 	}
 
-	// Parse CreatedAt
 	if createdAt, err := time.Parse(time.RFC3339, meta.CreatedAt); err == nil {
 		acc.CreatedAt = createdAt
 	} else {
 		acc.CreatedAt = time.Now()
 	}
-
-	// Parse LastWarmupSent
-	if meta.LastWarmupSent != "" {
-		if lastWarmup, err := time.Parse(time.RFC3339, meta.LastWarmupSent); err == nil {
-			acc.LastWarmupSent = lastWarmup
-		}
-	}
-
-	acc.WarmupComplete = meta.WarmupComplete
-
-	// Restore warmup stage
-	if meta.WarmupStage != "" {
-		acc.WarmupStage = meta.WarmupStage
-	} else {
-		// Calculate stage based on age
-		acc.WarmupStage = getWarmupStage(acc)
-	}
-	log.Printf("[%s] Restored account meta (stage: %s, warmup complete: %v)", acc.Phone, acc.WarmupStage, acc.WarmupComplete)
 }
 
-// UpdateWarmupSent updates the last warmup sent time and saves metadata
-func (m *ClientManager) UpdateWarmupSent(phone string) {
-	m.mu.Lock()
-	acc, exists := m.accounts[phone]
-	if !exists {
-		m.mu.Unlock()
-		return
-	}
-	acc.LastWarmupSent = time.Now()
-	m.mu.Unlock()
-
-	// Save to file
-	if err := m.saveAccountMeta(phone, acc); err != nil {
-		log.Printf("[%s] Failed to save warmup meta: %v", phone, err)
-	}
-}
-
-// MarkWarmupComplete marks an account's warmup as complete
-func (m *ClientManager) MarkWarmupComplete(phone string) {
-	m.mu.Lock()
-	acc, exists := m.accounts[phone]
-	if !exists {
-		m.mu.Unlock()
-		return
-	}
-	acc.WarmupComplete = true
-	m.mu.Unlock()
-
-	// Save to file
-	if err := m.saveAccountMeta(phone, acc); err != nil {
-		log.Printf("[%s] Failed to save warmup complete meta: %v", phone, err)
-	}
-	log.Printf("[%s] Warmup complete! Account is now fully warmed up.", phone)
-}
-
-// SkipWarmup skips the warmup period for an account (marks it as complete)
-func (m *ClientManager) SkipWarmup(phone string) error {
-	m.mu.Lock()
-	acc, exists := m.accounts[phone]
-	if !exists {
-		m.mu.Unlock()
-		return fmt.Errorf("account %s not found", phone)
-	}
-
-	if acc.WarmupComplete {
-		m.mu.Unlock()
-		return nil // Already complete
-	}
-
-	acc.WarmupComplete = true
-	m.mu.Unlock()
-
-	// Save to file
-	if err := m.saveAccountMeta(phone, acc); err != nil {
-		log.Printf("[%s] Failed to save skip warmup meta: %v", phone, err)
-		return err
-	}
-
-	log.Printf("[%s] Warmup SKIPPED! Account can now send at full capacity.", phone)
-	return nil
-}
+// v8.0: Removed warmup functions - UpdateWarmupSent, MarkWarmupComplete, SkipWarmup
 
 // GetActiveAccounts returns all logged-in and connected accounts
 func (m *ClientManager) GetActiveAccounts() []*AccountClient {
@@ -1876,7 +1757,7 @@ func (m *ClientManager) GetActiveAccounts() []*AccountClient {
 	return active
 }
 
-// GetAccountStats returns statistics for all accounts
+// GetAccountStats returns statistics for all accounts (v8.0 simplified)
 func (m *ClientManager) GetAccountStats() []map[string]interface{} {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1885,7 +1766,6 @@ func (m *ClientManager) GetAccountStats() []map[string]interface{} {
 	for _, acc := range m.accounts {
 		acc.mu.RLock()
 
-		// Calculate delivery rate
 		deliveryRate := 100.0
 		if acc.MessagesSent > 0 {
 			deliveryRate = float64(acc.MessagesDelivered) / float64(acc.MessagesSent) * 100
@@ -1895,17 +1775,12 @@ func (m *ClientManager) GetAccountStats() []map[string]interface{} {
 			"phone":              acc.Phone,
 			"logged_in":          acc.LoggedIn,
 			"connected":          acc.Connected,
-			"warmup_stage":       acc.WarmupStage,
-			"warmup_complete":    acc.WarmupComplete,
-			"is_warmup":          acc.IsInWarmup,
-			"is_unstable":        acc.IsUnstable,
 			"session_msgs":       acc.SessionMsgCount,
 			"today_msgs":         acc.TotalMsgToday,
 			"messages_sent":      acc.MessagesSent,
 			"messages_delivered": acc.MessagesDelivered,
 			"messages_failed":    acc.MessagesFailed,
 			"delivery_rate":      deliveryRate,
-			"disconnect_count":   acc.DisconnectCount,
 		})
 		acc.mu.RUnlock()
 	}
@@ -1981,34 +1856,7 @@ func getDailyLimitForStage(stage string) int {
 	}
 }
 
-// SetAccountWarmup sets warmup mode on/off for an account
-// warmup=true: new account with daily limits
-// warmup=false: veteran account, no daily limits (only rate limiting)
-func (m *ClientManager) SetAccountWarmup(phone string, warmup bool) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	acc, exists := m.accounts[phone]
-	if !exists {
-		return fmt.Errorf("account not found: %s", phone)
-	}
-
-	acc.mu.Lock()
-	acc.IsInWarmup = warmup
-	if !warmup {
-		acc.WarmupComplete = true
-		acc.WarmupStage = "veteran"
-	}
-	acc.mu.Unlock()
-
-	if warmup {
-		log.Printf("[%s] 🔥 Account set to WARMUP mode (daily limits apply)", phone)
-	} else {
-		log.Printf("[%s] ✅ Account set to VETERAN mode (no daily limits)", phone)
-	}
-
-	return nil
-}
+// v8.0: Removed SetAccountWarmup - no warmup system
 
 // isInternalAccount checks if a phone number belongs to our system
 func (m *ClientManager) isInternalAccount(phone string) bool {
@@ -2045,11 +1893,6 @@ func (m *ClientManager) GetHealthyAccountsCount() (healthy int, total int, alert
 			}
 		}
 
-		// Check if account is unstable
-		if acc.IsUnstable {
-			continue
-		}
-
 		healthy++
 	}
 
@@ -2067,7 +1910,7 @@ func (m *ClientManager) GetHealthyAccountsCount() (healthy int, total int, alert
 	return healthy, total, alerts
 }
 
-// CanSendCampaign checks if an account can send campaign messages (not just warmup)
+// CanSendCampaign checks if an account can send messages (v8.0 simplified)
 func (m *ClientManager) CanSendCampaign(phone string) (bool, string) {
 	m.mu.RLock()
 	acc, exists := m.accounts[phone]
@@ -2081,30 +1924,11 @@ func (m *ClientManager) CanSendCampaign(phone string) (bool, string) {
 		return false, "account not connected"
 	}
 
-	// Check health
+	// Check health - only BLOCKED matters in v8.0
 	if health := m.GetAccountHealth(phone); health != nil {
 		if health.Status == StatusBlocked {
-			return false, "account is BLOCKED"
+			return false, "account is BLOCKED - do not use for 48h"
 		}
-		if health.Status == StatusTempBlocked {
-			return false, "account is temporarily blocked"
-		}
-	}
-
-	// Check if account is unstable
-	if acc.IsUnstable {
-		return false, "account is unstable (too many disconnects)"
-	}
-
-	// Check account age - must be at least 3 days old
-	daysSinceCreation := time.Since(acc.CreatedAt).Hours() / 24
-	if daysSinceCreation < 3 {
-		return false, fmt.Sprintf("account too new (%.1f days) - need 3 days warmup", daysSinceCreation)
-	}
-
-	// Check if still in newborn stage
-	if acc.WarmupStage == "newborn" || acc.WarmupStage == "new_born" {
-		return false, "account still in newborn stage - only warmup allowed"
 	}
 
 	return true, ""
@@ -2194,62 +2018,6 @@ func (m *ClientManager) NotifyMasterWarmupMessage(fromPhone, toPhone string) {
 	defer resp.Body.Close()
 }
 
-// SetAccountIsNew sets the is_new flag for an account (v7.0)
-// If is_new is true, account enters 3-day warmup period
-func (m *ClientManager) SetAccountIsNew(phone string, isNew bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// v8.0: Removed SetAccountIsNew - no warmup system
 
-	acc, exists := m.accounts[phone]
-	if !exists {
-		return
-	}
-
-	acc.mu.Lock()
-	defer acc.mu.Unlock()
-
-	acc.IsNew = isNew
-	if isNew {
-		acc.WarmupStage = "WARMING"
-		acc.IsInWarmup = true
-		acc.WarmupComplete = false
-		acc.CreatedAt = time.Now() // Reset creation date for warmup calculation
-		log.Printf("[%s] Account set to NEW - 3-day warmup started", phone)
-	} else {
-		acc.WarmupStage = "Adult"
-		acc.IsInWarmup = false
-		acc.WarmupComplete = true
-		log.Printf("[%s] Account set to NOT NEW - ready for campaigns", phone)
-	}
-
-	// Save metadata
-	go m.saveAccountMeta(phone, acc)
-}
-
-// GetAccountStageInfo returns stage information for an account (v7.0)
-func (m *ClientManager) GetAccountStageInfo(phone string) map[string]interface{} {
-	m.mu.RLock()
-	acc, exists := m.accounts[phone]
-	m.mu.RUnlock()
-
-	if !exists {
-		return nil
-	}
-
-	acc.mu.RLock()
-	defer acc.mu.RUnlock()
-
-	stage := GetStageForAccount(acc.CreatedAt, acc.IsNew)
-
-	return map[string]interface{}{
-		"phone":          phone,
-		"stage":          stage.Name,
-		"power":          stage.Power,
-		"daily_limit":    stage.DailyLimit,
-		"can_campaign":   stage.CanCampaign,
-		"is_new":         acc.IsNew,
-		"days_active":    int(time.Since(acc.CreatedAt).Hours() / 24),
-		"messages_today": acc.TotalMsgToday,
-		"remaining":      stage.DailyLimit - acc.TotalMsgToday,
-	}
-}
+// v8.0: Removed GetAccountStageInfo - no more stages

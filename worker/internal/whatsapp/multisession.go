@@ -1,7 +1,6 @@
 package whatsapp
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"sync"
@@ -10,43 +9,43 @@ import (
 	"github.com/whatsapp-automation/worker/internal/telegram"
 )
 
-// MaxSessionsPerPhone is the maximum number of backup sessions per phone
+// v8.0: Simple multi-session - 4 backups per phone, auto-failover
+// No fingerprints, no rotation between sessions
+// Send from ONE session only, failover if it falls
+
 const MaxSessionsPerPhone = 4
 
 // SessionInfo represents a single session for a phone number
 type SessionInfo struct {
-	SessionNumber int       // 1, 2, 3, or 4
-	WorkerID      string    // Which worker manages this session
-	Status        string    // CONNECTED, DISCONNECTED, CONNECTING
-	LastActive    time.Time // Last activity timestamp
+	SessionNumber int
+	WorkerID      string
+	Status        string // CONNECTED, DISCONNECTED
+	LastActive    time.Time
 	Client        *AccountClient
-
-	// Unique fingerprint per session
-	Fingerprint *SessionFingerprint
 }
 
-// PhoneMultiSession manages multiple sessions for a single phone number
+// PhoneMultiSession manages multiple sessions for a single phone
 type PhoneMultiSession struct {
 	Phone         string
 	Sessions      []*SessionInfo
-	ActiveSession int // Currently active session number (1-4)
+	ActiveSession int // Currently active session number (1-4), 0 = none
 	mu            sync.RWMutex
 }
 
-// MultiSessionManager manages all phone numbers and their sessions
+// MultiSessionManager manages all phones
 type MultiSessionManager struct {
-	phones map[string]*PhoneMultiSession // phone -> multi-session
+	phones map[string]*PhoneMultiSession
 	mu     sync.RWMutex
 }
 
-// NewMultiSessionManager creates a new multi-session manager
+// NewMultiSessionManager creates a new manager
 func NewMultiSessionManager() *MultiSessionManager {
 	return &MultiSessionManager{
 		phones: make(map[string]*PhoneMultiSession),
 	}
 }
 
-// GetOrCreatePhoneSession gets or creates a phone's multi-session entry
+// GetOrCreatePhoneSession gets or creates phone entry
 func (m *MultiSessionManager) GetOrCreatePhoneSession(phone string) *PhoneMultiSession {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -58,84 +57,50 @@ func (m *MultiSessionManager) GetOrCreatePhoneSession(phone string) *PhoneMultiS
 	ps := &PhoneMultiSession{
 		Phone:         phone,
 		Sessions:      make([]*SessionInfo, 0, MaxSessionsPerPhone),
-		ActiveSession: 0, // No active session yet
+		ActiveSession: 0,
 	}
 	m.phones[phone] = ps
 	return ps
 }
 
-// AddSession adds a new session for a phone number with unique fingerprint
-func (ps *PhoneMultiSession) AddSession(sessionNum int, workerID string, client *AccountClient, fingerprint *SessionFingerprint) error {
+// AddSession adds a new session
+func (ps *PhoneMultiSession) AddSession(sessionNum int, workerID string, client *AccountClient) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
 	if sessionNum < 1 || sessionNum > MaxSessionsPerPhone {
-		return fmt.Errorf("session number must be between 1 and %d", MaxSessionsPerPhone)
+		return fmt.Errorf("session number must be 1-4")
 	}
 
-	// Check if session already exists
+	// Update existing or add new
 	for i, s := range ps.Sessions {
 		if s.SessionNumber == sessionNum {
-			// Update existing session
 			ps.Sessions[i].WorkerID = workerID
 			ps.Sessions[i].Client = client
 			ps.Sessions[i].Status = "CONNECTED"
 			ps.Sessions[i].LastActive = time.Now()
-			if fingerprint != nil {
-				ps.Sessions[i].Fingerprint = fingerprint
-			}
-			log.Printf("[MultiSession] Updated session %d for %s", sessionNum, ps.Phone)
+			log.Printf("[Session] Updated session %d for %s", sessionNum, ps.Phone)
 			return nil
 		}
 	}
 
-	// Generate fingerprint if not provided
-	if fingerprint == nil {
-		country := GetCountryFromPhone(ps.Phone)
-		var err error
-		fingerprint, err = GetFingerprintPool().GenerateSessionFingerprint(ps.Phone, sessionNum, country)
-		if err != nil {
-			log.Printf("[MultiSession] Warning: could not generate fingerprint: %v", err)
-		}
-	}
-
-	// Add new session
-	session := &SessionInfo{
+	// Add new
+	ps.Sessions = append(ps.Sessions, &SessionInfo{
 		SessionNumber: sessionNum,
 		WorkerID:      workerID,
 		Status:        "CONNECTED",
 		LastActive:    time.Now(),
 		Client:        client,
-		Fingerprint:   fingerprint,
-	}
-	ps.Sessions = append(ps.Sessions, session)
+	})
 
-	// If this is the first session or no active session, make it active
+	// Set as active if first session
 	if ps.ActiveSession == 0 {
 		ps.ActiveSession = sessionNum
-		log.Printf("[MultiSession] Session %d is now ACTIVE for %s", sessionNum, ps.Phone)
+		log.Printf("[Session] Session %d is now ACTIVE for %s", sessionNum, ps.Phone)
 	}
 
-	// Log fingerprint info
-	if fingerprint != nil {
-		log.Printf("[MultiSession] Added session %d for %s (total: %d sessions, UA: %s..., Screen: %dx%d, TZ: %s)",
-			sessionNum, ps.Phone, len(ps.Sessions),
-			fingerprint.UserAgent[:minInt(30, len(fingerprint.UserAgent))],
-			fingerprint.ScreenWidth, fingerprint.ScreenHeight,
-			fingerprint.Timezone)
-	} else {
-		log.Printf("[MultiSession] Added session %d for %s (total: %d sessions)", sessionNum, ps.Phone, len(ps.Sessions))
-	}
-
+	log.Printf("[Session] Added session %d for %s (total: %d)", sessionNum, ps.Phone, len(ps.Sessions))
 	return nil
-}
-
-// minInt helper for string truncation (avoid conflict with telegram.min)
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // GetActiveSession returns the currently active session's client
@@ -143,13 +108,14 @@ func (ps *PhoneMultiSession) GetActiveSession() *AccountClient {
 	ps.mu.RLock()
 	defer ps.mu.RUnlock()
 
+	// Try active session first
 	for _, s := range ps.Sessions {
 		if s.SessionNumber == ps.ActiveSession && s.Status == "CONNECTED" && s.Client != nil {
 			return s.Client
 		}
 	}
 
-	// Active session not available, find first connected one
+	// Fallback to any connected session
 	for _, s := range ps.Sessions {
 		if s.Status == "CONNECTED" && s.Client != nil {
 			return s.Client
@@ -159,41 +125,40 @@ func (ps *PhoneMultiSession) GetActiveSession() *AccountClient {
 	return nil
 }
 
-// MarkSessionDisconnected marks a session as disconnected and tries to failover
-func (ps *PhoneMultiSession) MarkSessionDisconnected(sessionNum int, workerID string) (failedOver bool, newSession int) {
+// MarkSessionDisconnected marks session as down and tries failover
+func (ps *PhoneMultiSession) MarkSessionDisconnected(sessionNum int) (failedOver bool, newSession int) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
-	// Find and mark the session
+	// Mark as disconnected
 	for _, s := range ps.Sessions {
 		if s.SessionNumber == sessionNum {
 			s.Status = "DISCONNECTED"
-			log.Printf("[MultiSession] Session %d for %s marked DISCONNECTED", sessionNum, ps.Phone)
+			log.Printf("[Session] Session %d for %s DISCONNECTED", sessionNum, ps.Phone)
 			break
 		}
 	}
 
-	// If this was the active session, try to failover
+	// Failover if this was active session
 	if ps.ActiveSession == sessionNum {
-		// Find next available session
 		for _, s := range ps.Sessions {
 			if s.Status == "CONNECTED" && s.Client != nil && s.Client.LoggedIn {
+				oldSession := ps.ActiveSession
 				ps.ActiveSession = s.SessionNumber
-				log.Printf("[MultiSession] ✅ Failover: %s switched from session %d to session %d",
-					ps.Phone, sessionNum, s.SessionNumber)
+				log.Printf("[Session] ✅ Failover: %s from session %d to %d", ps.Phone, oldSession, s.SessionNumber)
 				return true, s.SessionNumber
 			}
 		}
 
-		// No available session found
+		// No backup available
 		ps.ActiveSession = 0
-		log.Printf("[MultiSession] ⚠️ No backup sessions available for %s!", ps.Phone)
+		log.Printf("[Session] ⚠️ No backup sessions for %s!", ps.Phone)
 	}
 
 	return false, 0
 }
 
-// GetSessionCount returns the number of connected sessions
+// GetSessionCount returns connected/total counts
 func (ps *PhoneMultiSession) GetSessionCount() (connected int, total int) {
 	ps.mu.RLock()
 	defer ps.mu.RUnlock()
@@ -204,42 +169,28 @@ func (ps *PhoneMultiSession) GetSessionCount() (connected int, total int) {
 			connected++
 		}
 	}
-	return connected, total
+	return
 }
 
-// AllSessionsDown checks if all sessions are disconnected
+// AllSessionsDown checks if all sessions are down
 func (ps *PhoneMultiSession) AllSessionsDown() bool {
 	connected, total := ps.GetSessionCount()
 	return total > 0 && connected == 0
 }
 
-// GetStatus returns the phone's overall status
+// GetStatus returns phone status
 func (ps *PhoneMultiSession) GetStatus() map[string]interface{} {
 	ps.mu.RLock()
 	defer ps.mu.RUnlock()
 
 	sessions := make([]map[string]interface{}, len(ps.Sessions))
 	for i, s := range ps.Sessions {
-		sessionInfo := map[string]interface{}{
+		sessions[i] = map[string]interface{}{
 			"session_number": s.SessionNumber,
 			"worker_id":      s.WorkerID,
 			"status":         s.Status,
 			"last_active":    s.LastActive,
 		}
-
-		// Add fingerprint info if available
-		if s.Fingerprint != nil {
-			sessionInfo["fingerprint"] = map[string]interface{}{
-				"user_agent":    s.Fingerprint.UserAgent,
-				"screen_width":  s.Fingerprint.ScreenWidth,
-				"screen_height": s.Fingerprint.ScreenHeight,
-				"timezone":      s.Fingerprint.Timezone,
-				"language":      s.Fingerprint.Language,
-				"proxy_id":      s.Fingerprint.ProxyID,
-			}
-		}
-
-		sessions[i] = sessionInfo
 	}
 
 	connected, total := ps.GetSessionCount()
@@ -253,26 +204,25 @@ func (ps *PhoneMultiSession) GetStatus() map[string]interface{} {
 	}
 }
 
-// HandleSessionEvent handles session connect/disconnect events
-func (m *MultiSessionManager) HandleSessionEvent(phone string, sessionNum int, workerID string, connected bool, client *AccountClient, fingerprint *SessionFingerprint) {
+// HandleSessionEvent handles connect/disconnect events
+func (m *MultiSessionManager) HandleSessionEvent(phone string, sessionNum int, workerID string, connected bool, client *AccountClient) {
 	ps := m.GetOrCreatePhoneSession(phone)
 
 	if connected {
-		ps.AddSession(sessionNum, workerID, client, fingerprint)
+		ps.AddSession(sessionNum, workerID, client)
 	} else {
-		failedOver, newSession := ps.MarkSessionDisconnected(sessionNum, workerID)
+		failedOver, newSession := ps.MarkSessionDisconnected(sessionNum)
 
 		if ps.AllSessionsDown() {
-			// All sessions down - send Telegram alert
-			log.Printf("[MultiSession] 🔴 ALL SESSIONS DOWN for %s!", phone)
+			log.Printf("[Session] 🔴 ALL SESSIONS DOWN for %s!", phone)
 			go telegram.AlertAllSessionsDown(phone)
 		} else if failedOver {
-			log.Printf("[MultiSession] Failover successful: %s now using session %d", phone, newSession)
+			log.Printf("[Session] Failover: %s now using session %d", phone, newSession)
 		}
 	}
 }
 
-// GetActiveSessionForPhone returns the active session for a phone
+// GetActiveSessionForPhone returns active session client
 func (m *MultiSessionManager) GetActiveSessionForPhone(phone string) *AccountClient {
 	m.mu.RLock()
 	ps, exists := m.phones[phone]
@@ -295,21 +245,4 @@ func (m *MultiSessionManager) GetAllPhonesStatus() []map[string]interface{} {
 		result = append(result, ps.GetStatus())
 	}
 	return result
-}
-
-// SendFromPhone sends a message using the active session for a phone
-func (m *MultiSessionManager) SendFromPhone(ctx context.Context, phone, toPhone, message string) (*SendResult, error) {
-	client := m.GetActiveSessionForPhone(phone)
-	if client == nil {
-		return nil, fmt.Errorf("no active session for phone %s", phone)
-	}
-
-	// The actual send is delegated to the client
-	// This will be called from the ClientManager
-	return nil, fmt.Errorf("use ClientManager.SendMessage instead")
-}
-
-// AlertAllSessionsDown sends alert when all sessions for a phone are down
-func AlertAllSessionsDown(phone string) {
-	telegram.AlertAllSessionsDown(phone)
 }
