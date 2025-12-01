@@ -96,6 +96,12 @@ type AccountClient struct {
 	ConsecutiveFailures int       // Number of consecutive failures
 	BannedUntil         time.Time // If temp banned, when it expires
 
+	// Disconnect tracking - to detect unstable accounts
+	DisconnectCount     int       // Number of disconnects today
+	LastDisconnect      time.Time // Last disconnect time
+	DisconnectCountReset time.Time // When disconnect count was last reset
+	IsUnstable          bool      // True if account is unstable (many disconnects)
+
 	// Mutex for thread-safe access
 	mu sync.RWMutex
 }
@@ -697,6 +703,26 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 		acc.Connected = false
 		acc.lastConnectedState = false
 		acc.lastStateChange = time.Now()
+		
+		// Track disconnects to detect unstable accounts
+		today := time.Now().Format("2006-01-02")
+		resetDay := acc.DisconnectCountReset.Format("2006-01-02")
+		if today != resetDay {
+			acc.DisconnectCount = 0
+			acc.DisconnectCountReset = time.Now()
+			acc.IsUnstable = false
+		}
+		acc.DisconnectCount++
+		acc.LastDisconnect = time.Now()
+		
+		// Mark as unstable if too many disconnects (more than 10 per day)
+		if acc.DisconnectCount > 10 {
+			if !acc.IsUnstable {
+				log.Printf("[%s] ⚠️ Account marked as UNSTABLE (%d disconnects today)", phone, acc.DisconnectCount)
+			}
+			acc.IsUnstable = true
+		}
+		
 		m.mu.Unlock()
 
 		// Update health
@@ -705,14 +731,22 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 		}
 
 		// Attempt reconnect with random delay (only if was logged in)
-		// Random delay prevents all accounts from reconnecting at once
+		// Unstable accounts get longer delays to reduce server load
 		if acc.LoggedIn {
-			go func(p string) {
-				delay := time.Duration(rand.Intn(20)+5) * time.Second // 5-25 seconds
-				log.Printf("[%s] Will attempt reconnect in %v", p, delay)
+			go func(p string, unstable bool, disconnects int) {
+				var delay time.Duration
+				if unstable {
+					// Unstable accounts: wait longer (1-3 minutes)
+					delay = time.Duration(rand.Intn(120)+60) * time.Second
+					log.Printf("[%s] Unstable account, will attempt reconnect in %v (disconnects: %d)", p, delay, disconnects)
+				} else {
+					// Normal accounts: 5-25 seconds
+					delay = time.Duration(rand.Intn(20)+5) * time.Second
+					log.Printf("[%s] Will attempt reconnect in %v", p, delay)
+				}
 				time.Sleep(delay)
 				m.attemptSmartReconnect(p)
-			}(phone)
+			}(phone, acc.IsUnstable, acc.DisconnectCount)
 		}
 
 	case *events.KeepAliveTimeout:

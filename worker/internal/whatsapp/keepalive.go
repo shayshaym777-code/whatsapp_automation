@@ -219,6 +219,12 @@ func (m *ClientManager) sendKeepAliveMessages() {
 	today := time.Now().Format("2006-01-02")
 
 	for _, acc := range activeAccounts {
+		// Skip unstable accounts - they need rest
+		if acc.IsUnstable {
+			log.Printf("[KeepAlive] ⏸️ Skipping unstable account: %s (disconnects: %d)", acc.Phone, acc.DisconnectCount)
+			continue
+		}
+		
 		// Get or create daily stats
 		stats := m.getOrCreateDailyStats(acc.Phone, today)
 		
@@ -227,6 +233,12 @@ func (m *ClientManager) sendKeepAliveMessages() {
 		config := keepAliveByStage[stage]
 		if config.MessagesPerDay == 0 {
 			config = keepAliveByStage["adult"] // Default
+		}
+		
+		// Reduce activity for accounts with many disconnects (but not unstable yet)
+		if acc.DisconnectCount > 5 {
+			config.MinInterval = config.MinInterval * 2 // Double the interval
+			log.Printf("[KeepAlive] 🐢 Reduced activity for %s (disconnects: %d)", acc.Phone, acc.DisconnectCount)
 		}
 
 		// Check minimum interval
