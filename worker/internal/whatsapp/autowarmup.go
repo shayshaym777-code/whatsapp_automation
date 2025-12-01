@@ -2,6 +2,7 @@ package whatsapp
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"math/rand"
 	"time"
@@ -12,66 +13,68 @@ import (
 )
 
 const (
-	// WarmupDuration is how long new accounts need warmup (31 days for full maturity)
-	WarmupDuration = 31 * 24 * time.Hour
+	// WarmupDuration is how long new accounts need warmup (60 days for full maturity to Veteran)
+	WarmupDuration = 60 * 24 * time.Hour
 
-	// WarmupCheckInterval is how often to check if accounts need warmup
-	WarmupCheckInterval = 60 * time.Minute // Every hour
-
-	// WarmupMinInterval is minimum time between warmup messages for same account
-	WarmupMinInterval = 90 * time.Minute // 1.5 hours minimum
-
-	// WarmupMaxInterval is maximum time between warmup messages for same account
-	WarmupMaxInterval = 180 * time.Minute // 3 hours maximum
+	// WarmupCheckInterval is how often to run warmup activities
+	WarmupCheckInterval = 30 * time.Minute
 )
 
-// Warmup messages in Hebrew and English - with spin variations
-var warmupMessages = []string{
-	// Hebrew greetings
-	"היי מה קורה?",
-	"מה נשמע?",
-	"שלום!",
-	"בוקר טוב ☀️",
-	"ערב טוב 🌙",
-	"מה המצב?",
-	"איך הולך?",
-	"מה קורה?",
-	"הכל טוב?",
-	"שלום מה נשמע",
-	"היי 👋",
-	"מה נשמע אצלך?",
-	"איך היום שלך?",
-	"מה חדש?",
-	"הכל בסדר?",
-	// English greetings
-	"Hey!",
-	"Hi there!",
-	"Hello!",
-	"What's up?",
-	"How are you?",
-	"Good morning! ☀️",
-	"Good evening! 🌙",
-	"Hey there 👋",
-	"How's it going?",
-	"What's new?",
-	// Emojis only (universal)
-	"👋",
-	"👍",
-	"🙂",
-	"😊",
-	"✌️",
-	"🤙",
-	// Short casual
-	"yo",
-	"hey hey",
-	"hii",
-	"sup",
-	"heya",
+// WarmupLimits defines how many warmup activities per stage per day
+var WarmupLimits = map[string]WarmupConfig{
+	"new_born": {MessagesPerDay: 3, ActivitiesPerDay: 5, MinInterval: 2 * time.Hour, MaxInterval: 4 * time.Hour},
+	"baby":     {MessagesPerDay: 8, ActivitiesPerDay: 10, MinInterval: 1 * time.Hour, MaxInterval: 2 * time.Hour},
+	"toddler":  {MessagesPerDay: 15, ActivitiesPerDay: 15, MinInterval: 45 * time.Minute, MaxInterval: 90 * time.Minute},
+	"teen":     {MessagesPerDay: 25, ActivitiesPerDay: 20, MinInterval: 30 * time.Minute, MaxInterval: 60 * time.Minute},
+	"adult":    {MessagesPerDay: 40, ActivitiesPerDay: 25, MinInterval: 20 * time.Minute, MaxInterval: 45 * time.Minute},
+	"veteran":  {MessagesPerDay: 60, ActivitiesPerDay: 30, MinInterval: 15 * time.Minute, MaxInterval: 30 * time.Minute},
 }
 
-// StartAutoWarmup starts the automatic warmup system for new accounts
+type WarmupConfig struct {
+	MessagesPerDay   int
+	ActivitiesPerDay int
+	MinInterval      time.Duration
+	MaxInterval      time.Duration
+}
+
+// WarmupStats tracks warmup activity for each account
+type WarmupStats struct {
+	MessagesSentToday    int
+	ActivitiesToday      int
+	LastActivity         time.Time
+	LastMessage          time.Time
+	LastDayReset         string
+}
+
+var warmupStats = make(map[string]*WarmupStats)
+
+// Warmup messages - casual, human-like
+var warmupMessages = []string{
+	// Hebrew casual
+	"היי מה קורה?", "מה נשמע?", "שלום!", "בוקר טוב ☀️", "ערב טוב 🌙",
+	"מה המצב?", "איך הולך?", "הכל טוב?", "מה חדש?", "איך היום?",
+	"היי 👋", "מה קורה אצלך?", "שבוע טוב!", "יום טוב!", "מה נשמע חבר?",
+	"אהלן!", "מה העניינים?", "הכל בסדר?", "מה איתך?", "נו מה קורה?",
+	// English casual
+	"Hey!", "Hi there!", "What's up?", "How are you?", "Good morning! ☀️",
+	"Hey there 👋", "How's it going?", "What's new?", "Yo!", "Hii",
+	"Sup?", "Hey hey", "How's your day?", "All good?",
+	// Emojis only
+	"👋", "👍", "🙂", "😊", "✌️", "🤙", "💪", "🔥",
+	// Longer messages
+	"היי! מה נשמע? הכל בסדר?", "שלום! איך הולך היום?",
+	"Hey! How's everything going?", "Hi! Hope you're having a good day!",
+}
+
+// Self messages - things people send to themselves
+var selfMessages = []string{
+	"תזכורת", "לבדוק מחר", "קניות:", "רשימה:", "📝", "💡", "⭐",
+	"לזכור!", "חשוב!", "TODO", "לעשות:", "רעיון:", "הערה:",
+	"לא לשכוח", "בדיקה", "test", "...", "🔔", "📌",
+}
+
+// StartAutoWarmup starts the automatic warmup system
 func (m *ClientManager) StartAutoWarmup() {
-	// Stop existing warmup if running
 	if m.warmupStop != nil {
 		close(m.warmupStop)
 	}
@@ -79,144 +82,281 @@ func (m *ClientManager) StartAutoWarmup() {
 	m.warmupStop = make(chan struct{})
 	stopCh := m.warmupStop
 
-	// Check every 30 minutes if any account needs warmup
 	ticker := time.NewTicker(WarmupCheckInterval)
 
 	go func(stop <-chan struct{}) {
-		log.Println("[AutoWarmup] Started - checking every 30 minutes for accounts needing warmup")
+		log.Println("[Warmup] 🔥 Started - Real warmup system active")
 		defer ticker.Stop()
 
-		// Run immediately on start
-		m.checkAndSendWarmup()
+		// Run immediately
+		m.runWarmupCycle()
 
 		for {
 			select {
 			case <-ticker.C:
-				m.checkAndSendWarmup()
+				m.runWarmupCycle()
 			case <-stop:
-				log.Println("[AutoWarmup] Stopped")
+				log.Println("[Warmup] Stopped")
 				return
 			}
 		}
 	}(stopCh)
 }
 
-// StopAutoWarmup stops the automatic warmup system
+// StopAutoWarmup stops the warmup system
 func (m *ClientManager) StopAutoWarmup() {
 	if m.warmupStop != nil {
 		close(m.warmupStop)
 		m.warmupStop = nil
-		log.Println("[AutoWarmup] Stopped")
+		log.Println("[Warmup] Stopped")
 	}
 }
 
-// checkAndSendWarmup checks all accounts and sends warmup messages as needed
-func (m *ClientManager) checkAndSendWarmup() {
-	// Get all active accounts
-	activeAccounts := m.GetActiveAccounts()
-
-	if len(activeAccounts) < 2 {
-		// Need at least 2 accounts to send warmup messages between them
+// runWarmupCycle runs a complete warmup cycle for all accounts
+func (m *ClientManager) runWarmupCycle() {
+	accounts := m.GetActiveAccounts()
+	if len(accounts) == 0 {
 		return
 	}
 
-	// Collect accounts that need warmup
-	var accountsNeedingWarmup []*AccountClient
-	for _, acc := range activeAccounts {
-		if m.needsWarmup(acc) {
-			accountsNeedingWarmup = append(accountsNeedingWarmup, acc)
+	log.Printf("[Warmup] 🔄 Running warmup cycle for %d accounts", len(accounts))
+
+	// Reset daily stats if new day
+	today := time.Now().Format("2006-01-02")
+	for phone, stats := range warmupStats {
+		if stats.LastDayReset != today {
+			stats.MessagesSentToday = 0
+			stats.ActivitiesToday = 0
+			stats.LastDayReset = today
+			log.Printf("[Warmup] Reset daily stats for %s", phone)
 		}
 	}
 
-	if len(accountsNeedingWarmup) == 0 {
+	// Process each account
+	for _, acc := range accounts {
+		go m.processAccountWarmup(acc, accounts)
+		
+		// Delay between accounts (10-30 seconds)
+		time.Sleep(time.Duration(10+rand.Intn(20)) * time.Second)
+	}
+}
+
+// processAccountWarmup handles warmup for a single account
+func (m *ClientManager) processAccountWarmup(acc *AccountClient, allAccounts []*AccountClient) {
+	phone := acc.Phone
+	stage := acc.WarmupStage
+	if stage == "" {
+		stage = m.calculateStage(acc)
+	}
+
+	config := WarmupLimits[stage]
+	if config.MessagesPerDay == 0 {
+		config = WarmupLimits["adult"]
+	}
+
+	// Get or create stats
+	stats := getWarmupStats(phone)
+
+	// Check if we should do activity now
+	timeSinceLastActivity := time.Since(stats.LastActivity)
+	requiredInterval := config.MinInterval + time.Duration(rand.Int63n(int64(config.MaxInterval-config.MinInterval)))
+
+	if timeSinceLastActivity < requiredInterval {
+		return // Too soon
+	}
+
+	// Check daily limits
+	if stats.MessagesSentToday >= config.MessagesPerDay && stats.ActivitiesToday >= config.ActivitiesPerDay {
+		return // Reached daily limit
+	}
+
+	// Decide what to do (weighted random)
+	action := m.pickWarmupAction(stats, config)
+
+	switch action {
+	case "send_to_other":
+		m.warmupSendToOther(acc, allAccounts, stats)
+	case "send_to_self":
+		m.warmupSendToSelf(acc, stats)
+	case "activity":
+		m.warmupDoActivity(acc, stats)
+	}
+}
+
+// pickWarmupAction decides what warmup action to perform
+func (m *ClientManager) pickWarmupAction(stats *WarmupStats, config WarmupConfig) string {
+	// Weights: send to other (40%), send to self (20%), activity (40%)
+	canSendMessage := stats.MessagesSentToday < config.MessagesPerDay
+	canDoActivity := stats.ActivitiesToday < config.ActivitiesPerDay
+
+	if !canSendMessage && !canDoActivity {
+		return ""
+	}
+
+	r := rand.Intn(100)
+
+	if canSendMessage && r < 40 {
+		return "send_to_other"
+	} else if canSendMessage && r < 60 {
+		return "send_to_self"
+	} else if canDoActivity {
+		return "activity"
+	} else if canSendMessage {
+		return "send_to_other"
+	}
+
+	return ""
+}
+
+// warmupSendToOther sends a message to another account in the system
+func (m *ClientManager) warmupSendToOther(from *AccountClient, allAccounts []*AccountClient, stats *WarmupStats) {
+	if len(allAccounts) < 2 {
 		return
 	}
 
-	log.Printf("[AutoWarmup] %d accounts need warmup messages", len(accountsNeedingWarmup))
-
-	// Send warmup messages
-	for i, acc := range accountsNeedingWarmup {
-		// Find a target account (round-robin through active accounts)
-		targetIndex := (i + 1) % len(activeAccounts)
-		target := activeAccounts[targetIndex]
-
-		// Don't send to self
-		if target.Phone == acc.Phone {
-			targetIndex = (targetIndex + 1) % len(activeAccounts)
-			target = activeAccounts[targetIndex]
-			// If still same (only 2 accounts and both need warmup), skip
-			if target.Phone == acc.Phone {
-				continue
-			}
+	// Pick random target (not self)
+	var target *AccountClient
+	for attempts := 0; attempts < 5; attempts++ {
+		idx := rand.Intn(len(allAccounts))
+		if allAccounts[idx].Phone != from.Phone {
+			target = allAccounts[idx]
+			break
 		}
-
-		// Pick random warmup message
-		message := warmupMessages[rand.Intn(len(warmupMessages))]
-
-		// Send warmup message asynchronously
-		go m.sendWarmupMessage(acc, target.Phone, message)
-
-		// Longer delay between sending from different accounts (30-120 seconds)
-		delaySeconds := 30 + rand.Intn(90)
-		time.Sleep(time.Duration(delaySeconds) * time.Second)
 	}
+
+	if target == nil {
+		return
+	}
+
+	// Pick random message
+	message := warmupMessages[rand.Intn(len(warmupMessages))]
+
+	// Send
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	toJID := types.NewJID(sanitizePhone(target.Phone), types.DefaultUserServer)
+	msg := &waE2E.Message{Conversation: proto.String(message)}
+
+	_, err := from.Client.SendMessage(ctx, toJID, msg)
+	if err != nil {
+		log.Printf("[Warmup] ❌ %s -> %s failed: %v", from.Phone, target.Phone, err)
+		return
+	}
+
+	stats.MessagesSentToday++
+	stats.LastMessage = time.Now()
+	stats.LastActivity = time.Now()
+
+	log.Printf("[Warmup] 💬 %s -> %s: %s (msgs today: %d)", from.Phone, target.Phone, message, stats.MessagesSentToday)
+
+	// Update account's warmup sent time
+	m.UpdateWarmupSent(from.Phone)
 }
 
-// needsWarmup checks if an account needs a warmup message
-func (m *ClientManager) needsWarmup(acc *AccountClient) bool {
-	// Already completed warmup
-	if acc.WarmupComplete {
-		return false
-	}
-
-	// Check account age
-	accountAge := time.Since(acc.CreatedAt)
-
-	// If account is older than warmup duration, mark as complete
-	if accountAge >= WarmupDuration {
-		m.MarkWarmupComplete(acc.Phone)
-		return false
-	}
-
-	// Check time since last warmup message
-	timeSinceLastWarmup := time.Since(acc.LastWarmupSent)
-
-	// Random interval between 1-2 hours
-	requiredInterval := time.Duration(WarmupMinInterval.Minutes()+rand.Float64()*(WarmupMaxInterval-WarmupMinInterval).Minutes()) * time.Minute
-
-	// Need warmup if enough time has passed
-	return timeSinceLastWarmup >= requiredInterval
-}
-
-// sendWarmupMessage sends a warmup message from one account to another
-func (m *ClientManager) sendWarmupMessage(from *AccountClient, toPhone string, message string) {
-	// Create JID for recipient
-	toPhoneSanitized := sanitizePhone(toPhone)
-	toJID := types.NewJID(toPhoneSanitized, types.DefaultUserServer)
-
-	log.Printf("[AutoWarmup] Sending: %s -> %s: %s", from.Phone, toPhone, message)
+// warmupSendToSelf sends a message to yourself (common human behavior)
+func (m *ClientManager) warmupSendToSelf(acc *AccountClient, stats *WarmupStats) {
+	message := selfMessages[rand.Intn(len(selfMessages))]
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Create message
-	msg := &waE2E.Message{
-		Conversation: proto.String(message),
-	}
+	// Send to self
+	selfJID := types.NewJID(sanitizePhone(acc.Phone), types.DefaultUserServer)
+	msg := &waE2E.Message{Conversation: proto.String(message)}
 
-	_, err := from.Client.SendMessage(ctx, toJID, msg)
+	_, err := acc.Client.SendMessage(ctx, selfJID, msg)
 	if err != nil {
-		log.Printf("[AutoWarmup] Failed to send from %s to %s: %v", from.Phone, toPhone, err)
+		log.Printf("[Warmup] ❌ %s -> self failed: %v", acc.Phone, err)
 		return
 	}
 
-	// Update last warmup sent time
-	m.UpdateWarmupSent(from.Phone)
+	stats.MessagesSentToday++
+	stats.LastMessage = time.Now()
+	stats.LastActivity = time.Now()
 
-	// Notify Master server about warmup message
-	go m.NotifyMasterWarmupMessage(from.Phone, toPhone)
+	log.Printf("[Warmup] 📝 %s -> self: %s (msgs today: %d)", acc.Phone, message, stats.MessagesSentToday)
+}
 
-	log.Printf("[AutoWarmup] Sent successfully: %s -> %s", from.Phone, toPhone)
+// warmupDoActivity performs a human-like activity
+func (m *ClientManager) warmupDoActivity(acc *AccountClient, stats *WarmupStats) {
+	activities := []string{
+		"presence_online",
+		"presence_offline",
+		"read_chat",
+		"typing",
+	}
+
+	activity := activities[rand.Intn(len(activities))]
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var err error
+	switch activity {
+	case "presence_online":
+		err = acc.Client.SendPresence(ctx, types.PresenceAvailable)
+	case "presence_offline":
+		err = acc.Client.SendPresence(ctx, types.PresenceUnavailable)
+	case "read_chat":
+		// Mark random chat as read (simulated by sending presence)
+		err = acc.Client.SendPresence(ctx, types.PresenceAvailable)
+	case "typing":
+		// Send composing presence to a random account
+		allAccounts := m.GetActiveAccounts()
+		if len(allAccounts) > 1 {
+			for _, target := range allAccounts {
+				if target.Phone != acc.Phone {
+					targetJID := types.NewJID(sanitizePhone(target.Phone), types.DefaultUserServer)
+					acc.Client.SendChatPresence(ctx, targetJID, types.ChatPresenceComposing, types.ChatPresenceMediaText)
+					time.Sleep(time.Duration(1+rand.Intn(3)) * time.Second)
+					acc.Client.SendChatPresence(ctx, targetJID, types.ChatPresencePaused, types.ChatPresenceMediaText)
+					break
+				}
+			}
+		}
+	}
+
+	if err != nil {
+		log.Printf("[Warmup] ❌ %s activity %s failed: %v", acc.Phone, activity, err)
+		return
+	}
+
+	stats.ActivitiesToday++
+	stats.LastActivity = time.Now()
+
+	log.Printf("[Warmup] 🎯 %s: %s (activities today: %d)", acc.Phone, activity, stats.ActivitiesToday)
+}
+
+// calculateStage determines the warmup stage based on account age
+func (m *ClientManager) calculateStage(acc *AccountClient) string {
+	ageDays := time.Since(acc.CreatedAt).Hours() / 24
+
+	if ageDays >= 60 {
+		return "veteran"
+	} else if ageDays >= 31 {
+		return "adult"
+	} else if ageDays >= 15 {
+		return "teen"
+	} else if ageDays >= 8 {
+		return "toddler"
+	} else if ageDays >= 4 {
+		return "baby"
+	}
+	return "new_born"
+}
+
+// getWarmupStats gets or creates warmup stats for a phone
+func getWarmupStats(phone string) *WarmupStats {
+	if stats, ok := warmupStats[phone]; ok {
+		return stats
+	}
+
+	stats := &WarmupStats{
+		LastDayReset: time.Now().Format("2006-01-02"),
+	}
+	warmupStats[phone] = stats
+	return stats
 }
 
 // GetWarmupStatus returns the warmup status of all accounts
@@ -231,22 +371,26 @@ func (m *ClientManager) GetWarmupStatus() []map[string]interface{} {
 		}
 
 		accountAge := time.Since(acc.CreatedAt)
+		stage := m.calculateStage(acc)
+		config := WarmupLimits[stage]
+		stats := getWarmupStats(phone)
+
 		remainingWarmup := WarmupDuration - accountAge
 		if remainingWarmup < 0 {
 			remainingWarmup = 0
 		}
 
 		status := map[string]interface{}{
-			"phone":             phone,
-			"created_at":        acc.CreatedAt.Format(time.RFC3339),
-			"account_age_hours": accountAge.Hours(),
-			"warmup_complete":   acc.WarmupComplete,
-			"remaining_warmup":  remainingWarmup.String(),
-		}
-
-		if !acc.LastWarmupSent.IsZero() {
-			status["last_warmup_sent"] = acc.LastWarmupSent.Format(time.RFC3339)
-			status["time_since_warmup"] = time.Since(acc.LastWarmupSent).String()
+			"phone":              phone,
+			"stage":              stage,
+			"account_age_days":   int(accountAge.Hours() / 24),
+			"warmup_complete":    acc.WarmupComplete,
+			"remaining_days":     int(remainingWarmup.Hours() / 24),
+			"messages_today":     stats.MessagesSentToday,
+			"messages_limit":     config.MessagesPerDay,
+			"activities_today":   stats.ActivitiesToday,
+			"activities_limit":   config.ActivitiesPerDay,
+			"last_activity":      stats.LastActivity.Format(time.RFC3339),
 		}
 
 		statuses = append(statuses, status)
@@ -269,7 +413,7 @@ func (m *ClientManager) GetAccountsCapacity() []map[string]interface{} {
 		acc.mu.RLock()
 		stage := acc.WarmupStage
 		if stage == "" {
-			stage = "adult"
+			stage = m.calculateStage(acc)
 		}
 		todayCount := acc.TotalMsgToday
 		hourCount := acc.HourMsgCount
@@ -278,7 +422,7 @@ func (m *ClientManager) GetAccountsCapacity() []map[string]interface{} {
 		limits := getStageLimits(stage)
 		availableDaily := limits.MaxDay - todayCount
 		availableHourly := limits.MaxHour - hourCount
-		
+
 		if availableDaily < 0 {
 			availableDaily = 0
 		}
@@ -286,7 +430,6 @@ func (m *ClientManager) GetAccountsCapacity() []map[string]interface{} {
 			availableHourly = 0
 		}
 
-		// Available is the minimum of daily and hourly remaining
 		available := availableDaily
 		if availableHourly < available {
 			available = availableHourly
@@ -307,4 +450,41 @@ func (m *ClientManager) GetAccountsCapacity() []map[string]interface{} {
 	}
 
 	return capacities
+}
+
+// GetWarmupSummary returns a summary of warmup activity
+func (m *ClientManager) GetWarmupSummary() map[string]interface{} {
+	accounts := m.GetActiveAccounts()
+
+	stageCounts := make(map[string]int)
+	totalMessages := 0
+	totalActivities := 0
+
+	for _, acc := range accounts {
+		stage := m.calculateStage(acc)
+		stageCounts[stage]++
+
+		stats := getWarmupStats(acc.Phone)
+		totalMessages += stats.MessagesSentToday
+		totalActivities += stats.ActivitiesToday
+	}
+
+	return map[string]interface{}{
+		"total_accounts":     len(accounts),
+		"stage_distribution": stageCounts,
+		"messages_today":     totalMessages,
+		"activities_today":   totalActivities,
+		"warmup_limits":      WarmupLimits,
+	}
+}
+
+// ForceWarmupNow forces an immediate warmup cycle (for testing)
+func (m *ClientManager) ForceWarmupNow() string {
+	accounts := m.GetActiveAccounts()
+	if len(accounts) == 0 {
+		return "No active accounts"
+	}
+
+	go m.runWarmupCycle()
+	return fmt.Sprintf("Warmup cycle started for %d accounts", len(accounts))
 }

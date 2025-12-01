@@ -123,6 +123,8 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 
 	// Warmup endpoints
 	r.HandleFunc("/warmup/status", s.handleWarmupStatus).Methods(http.MethodGet)
+	r.HandleFunc("/warmup/summary", s.handleWarmupSummary).Methods(http.MethodGet)
+	r.HandleFunc("/warmup/force", s.handleWarmupForce).Methods(http.MethodPost)
 	r.HandleFunc("/accounts/{phone}/skip-warmup", s.handleSkipWarmup).Methods(http.MethodPost)
 
 	// Reconnect endpoint
@@ -503,6 +505,26 @@ func (s *Server) handleWarmupStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// GET /warmup/summary - Get warmup summary
+func (s *Server) handleWarmupSummary(w http.ResponseWriter, r *http.Request) {
+	summary := s.client.GetWarmupSummary()
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"summary": summary,
+	})
+}
+
+// POST /warmup/force - Force immediate warmup cycle
+func (s *Server) handleWarmupForce(w http.ResponseWriter, r *http.Request) {
+	result := s.client.ForceWarmupNow()
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"message": result,
+	})
+}
+
 // POST /accounts/{phone}/skip-warmup - Skip warmup for an account
 func (s *Server) handleSkipWarmup(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
@@ -753,12 +775,12 @@ func (s *Server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 	ready := totalCapacity > 0
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success":           true,
-		"ready":             ready,
-		"worker_id":         s.WorkerID,
-		"total_accounts":    len(accounts),
+		"success":            true,
+		"ready":              ready,
+		"worker_id":          s.WorkerID,
+		"total_accounts":     len(accounts),
 		"available_accounts": availableAccounts,
-		"total_capacity":    totalCapacity,
-		"accounts":          accounts,
+		"total_capacity":     totalCapacity,
+		"accounts":           accounts,
 	})
 }

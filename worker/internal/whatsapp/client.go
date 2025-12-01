@@ -902,7 +902,7 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 	// === LIMIT CHECK: Enforce daily and hourly limits ===
 	// First, reset counters if needed
 	m.resetCountersIfNeeded(acc)
-	
+
 	acc.mu.RLock()
 	stage := acc.WarmupStage
 	todayCount := acc.TotalMsgToday
@@ -910,16 +910,16 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 	acc.mu.RUnlock()
 
 	limits := getStageLimits(stage)
-	
+
 	// Check daily limit
 	if todayCount >= limits.MaxDay {
-		return nil, fmt.Errorf("daily limit reached for %s: %d/%d (stage: %s)", 
+		return nil, fmt.Errorf("daily limit reached for %s: %d/%d (stage: %s)",
 			fromPhone, todayCount, limits.MaxDay, stage)
 	}
-	
+
 	// Check hourly limit
 	if hourCount >= limits.MaxHour {
-		return nil, fmt.Errorf("hourly limit reached for %s: %d/%d (stage: %s)", 
+		return nil, fmt.Errorf("hourly limit reached for %s: %d/%d (stage: %s)",
 			fromPhone, hourCount, limits.MaxHour, stage)
 	}
 
@@ -1055,10 +1055,10 @@ type StageLimits struct {
 // resetCountersIfNeeded resets hourly and daily counters when time passes
 func (m *ClientManager) resetCountersIfNeeded(acc *AccountClient) {
 	now := time.Now()
-	
+
 	acc.mu.Lock()
 	defer acc.mu.Unlock()
-	
+
 	// Reset hourly counter if new hour
 	if now.Hour() != acc.LastHourReset.Hour() || now.Sub(acc.LastHourReset) > time.Hour {
 		if acc.HourMsgCount > 0 {
@@ -1067,7 +1067,7 @@ func (m *ClientManager) resetCountersIfNeeded(acc *AccountClient) {
 		acc.HourMsgCount = 0
 		acc.LastHourReset = now
 	}
-	
+
 	// Reset daily counter if new day
 	today := now.Format("2006-01-02")
 	lastDay := acc.LastDayReset.Format("2006-01-02")
