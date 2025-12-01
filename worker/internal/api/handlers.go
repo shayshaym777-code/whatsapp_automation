@@ -48,7 +48,9 @@ func NewServer(workerID, deviceSeed, proxyCountry string, fp fingerprint.DeviceF
 	}, nil
 }
 
-// StartBackgroundServices starts the connection monitor, auto warmup, and loads existing sessions
+// StartBackgroundServices starts the connection monitor and loads existing sessions
+// v5.0: Removed Keep Alive messages, Human Activity Simulator, Voice Notes
+// These are NOT needed - phones are in DuoPlus cloud, sessions persist in Docker volumes
 func (s *Server) StartBackgroundServices(ctx context.Context) {
 	// Load existing sessions from disk
 	log.Printf("[STARTUP] Loading existing sessions...")
@@ -65,29 +67,27 @@ func (s *Server) StartBackgroundServices(ctx context.Context) {
 		log.Printf("[STARTUP] Cleaned up %d inactive accounts", len(removed))
 	}
 
-	// Start the connection monitor
+	// Start the connection monitor (auto-reconnect)
 	s.monitor.Start()
 	log.Printf("[STARTUP] Connection monitor started")
 
-	// Start auto warmup for new accounts
+	// Start auto warmup for new accounts (internal messages only)
 	s.client.StartAutoWarmup()
 	log.Printf("[STARTUP] Auto warmup system started")
 
-	// Start keep alive scheduler (sends messages every hour, checks health every 5 min)
-	s.client.StartKeepAlive()
-	log.Printf("[STARTUP] Keep alive system started")
-
-	// Start human activity simulator for all connected accounts
-	s.client.StartAllActivitySimulators()
-	log.Printf("[STARTUP] Human activity simulator started")
-
-	// Start heartbeat system (keeps connections alive)
+	// Start heartbeat system (keeps WebSocket connections alive)
 	s.client.StartHeartbeat()
 	log.Printf("[STARTUP] Heartbeat system started")
 
 	// Setup message handlers for receiving messages
 	s.client.SetupAllMessageHandlers()
 	log.Printf("[STARTUP] Message receivers setup complete")
+	
+	// NOTE: The following are DISABLED per v5.0 spec:
+	// - Keep Alive messages every hour (NOT needed)
+	// - Human Activity Simulator (NOT needed)
+	// - Voice Notes (NOT needed)
+	// Phones are in DuoPlus cloud - sessions persist, no need for fake activity
 }
 
 // GetClientManager returns the client manager (for external access if needed)
@@ -865,15 +865,15 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 // Returns healthy accounts count, alerts, and per-account status
 func (s *Server) handleCanSend(w http.ResponseWriter, r *http.Request) {
 	healthy, total, alerts := s.client.GetHealthyAccountsCount()
-	
+
 	// Get per-account campaign readiness
 	accounts := s.client.GetAccountStats()
 	accountStatus := make([]map[string]interface{}, 0)
-	
+
 	for _, acc := range accounts {
 		phone := acc["phone"].(string)
 		canSend, reason := s.client.CanSendCampaign(phone)
-		
+
 		accountStatus = append(accountStatus, map[string]interface{}{
 			"phone":       phone,
 			"can_send":    canSend,
@@ -883,7 +883,7 @@ func (s *Server) handleCanSend(w http.ResponseWriter, r *http.Request) {
 			"is_unstable": acc["is_unstable"],
 		})
 	}
-	
+
 	// Calculate total power (capacity)
 	totalPower := 0
 	for _, acc := range accounts {
@@ -906,9 +906,9 @@ func (s *Server) handleCanSend(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	
+
 	ready := healthy >= 1 && len(alerts) == 0
-	
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success":          true,
 		"ready":            ready,

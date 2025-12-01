@@ -990,7 +990,7 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 	// This check is for external messages - warmup between internal accounts is allowed
 	daysSinceCreation := time.Since(createdAt).Hours() / 24
 	isInternalTarget := m.isInternalAccount(toPhone)
-	
+
 	if daysSinceCreation < 3 && !isInternalTarget {
 		return nil, fmt.Errorf("account %s is too new (%.1f days) - only warmup allowed for first 3 days", fromPhone, daysSinceCreation)
 	}
@@ -1108,25 +1108,26 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 }
 
 // applyPauses returns the pause duration based on message count
-// Every 10 messages: 30-120 seconds
-// Every 50 messages: 5-15 minutes
-// Every 100 messages: 15-30 minutes
+// v5.0 spec:
+// Every 10 messages:  10-30 seconds
+// Every 50 messages:  2-5 minutes
+// Every 100 messages: 5-10 minutes
 func (m *ClientManager) applyPauses(msgCount int) time.Duration {
 	if msgCount%100 == 0 {
-		// Long break: 15-30 minutes
-		pause := rand.Intn(900) + 900 // 900-1800 seconds
+		// Long break: 5-10 minutes
+		pause := rand.Intn(300) + 300 // 300-600 seconds
 		return time.Duration(pause) * time.Second
 	}
 
 	if msgCount%50 == 0 {
-		// Session break: 5-15 minutes
-		pause := rand.Intn(600) + 300 // 300-900 seconds
+		// Session break: 2-5 minutes
+		pause := rand.Intn(180) + 120 // 120-300 seconds
 		return time.Duration(pause) * time.Second
 	}
 
 	if msgCount%10 == 0 {
-		// Short break: 30-120 seconds
-		pause := rand.Intn(90) + 30 // 30-120 seconds
+		// Short break: 10-30 seconds
+		pause := rand.Intn(20) + 10 // 10-30 seconds
 		return time.Duration(pause) * time.Second
 	}
 
@@ -1186,14 +1187,18 @@ func getStageLimits(stage string) StageLimits {
 }
 
 // getDelayByStage returns the delay based on warmup stage
+// v5.0: Base delay is 2-4 seconds for all stages (20-25 msgs/min max)
+// Stage differences are minimal - focus is on daily limits instead
 func getDelayByStage(stage string) time.Duration {
+	// v5.0 spec: Base delay 2-4 seconds with jitter
+	// All stages use similar delay - differentiation is in daily limits
 	delays := map[string][2]int{
-		"new_born": {30, 60}, // 30-60 seconds
-		"baby":     {20, 40}, // 20-40 seconds
-		"toddler":  {10, 20}, // 10-20 seconds
-		"teen":     {5, 10},  // 5-10 seconds
-		"adult":    {3, 7},   // 3-7 seconds
-		"veteran":  {1, 5},   // 1-5 seconds
+		"new_born": {3, 5}, // Slightly slower for new accounts
+		"baby":     {3, 4}, // 3-4 seconds
+		"toddler":  {2, 4}, // 2-4 seconds
+		"teen":     {2, 4}, // 2-4 seconds
+		"adult":    {2, 4}, // 2-4 seconds
+		"veteran":  {2, 3}, // 2-3 seconds (fastest)
 	}
 
 	d, ok := delays[stage]
@@ -1201,13 +1206,13 @@ func getDelayByStage(stage string) time.Duration {
 		d = delays["adult"] // Default to adult
 	}
 
-	// Add jitter
+	// Add jitter ±0.5 seconds
 	base := rand.Intn(d[1]-d[0]+1) + d[0]
-	jitter := (rand.Float64() - 0.5) * 2 // -1 to +1 second
+	jitter := (rand.Float64() - 0.5) // -0.5 to +0.5 second
 
 	totalSeconds := float64(base) + jitter
-	if totalSeconds < 1 {
-		totalSeconds = 1
+	if totalSeconds < 1.5 {
+		totalSeconds = 1.5 // Minimum 1.5 seconds
 	}
 
 	return time.Duration(totalSeconds * float64(time.Second))
@@ -2044,10 +2049,10 @@ func (m *ClientManager) SetAccountWarmup(phone string, warmup bool) error {
 func (m *ClientManager) isInternalAccount(phone string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	// Normalize phone number
 	normalizedPhone := sanitizePhone(phone)
-	
+
 	for accPhone := range m.accounts {
 		if sanitizePhone(accPhone) == normalizedPhone {
 			return true
@@ -2060,40 +2065,40 @@ func (m *ClientManager) isInternalAccount(phone string) bool {
 func (m *ClientManager) GetHealthyAccountsCount() (healthy int, total int, alerts []string) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	total = len(m.accounts)
-	
+
 	for phone, acc := range m.accounts {
 		if !acc.Connected || !acc.LoggedIn {
 			continue
 		}
-		
+
 		// Check health status
 		if health := m.GetAccountHealth(phone); health != nil {
 			if health.Status == StatusBlocked || health.Status == StatusTempBlocked {
 				continue
 			}
 		}
-		
+
 		// Check if account is unstable
 		if acc.IsUnstable {
 			continue
 		}
-		
+
 		healthy++
 	}
-	
+
 	// Generate alerts
 	if healthy == 0 {
 		alerts = append(alerts, "🚨 אין חשבונות זמינים לשליחה!")
 	} else if healthy < 3 {
 		alerts = append(alerts, fmt.Sprintf("⚠️ רק %d חשבונות זמינים - מומלץ להוסיף עוד", healthy))
 	}
-	
+
 	if total > 0 && float64(healthy)/float64(total) < 0.5 {
 		alerts = append(alerts, fmt.Sprintf("⚠️ רק %.0f%% מהחשבונות פעילים", float64(healthy)/float64(total)*100))
 	}
-	
+
 	return healthy, total, alerts
 }
 
@@ -2102,15 +2107,15 @@ func (m *ClientManager) CanSendCampaign(phone string) (bool, string) {
 	m.mu.RLock()
 	acc, exists := m.accounts[phone]
 	m.mu.RUnlock()
-	
+
 	if !exists {
 		return false, "account not found"
 	}
-	
+
 	if !acc.Connected || !acc.LoggedIn {
 		return false, "account not connected"
 	}
-	
+
 	// Check health
 	if health := m.GetAccountHealth(phone); health != nil {
 		if health.Status == StatusBlocked {
@@ -2120,23 +2125,23 @@ func (m *ClientManager) CanSendCampaign(phone string) (bool, string) {
 			return false, "account is temporarily blocked"
 		}
 	}
-	
+
 	// Check if account is unstable
 	if acc.IsUnstable {
 		return false, "account is unstable (too many disconnects)"
 	}
-	
+
 	// Check account age - must be at least 3 days old
 	daysSinceCreation := time.Since(acc.CreatedAt).Hours() / 24
 	if daysSinceCreation < 3 {
 		return false, fmt.Sprintf("account too new (%.1f days) - need 3 days warmup", daysSinceCreation)
 	}
-	
+
 	// Check if still in newborn stage
 	if acc.WarmupStage == "newborn" || acc.WarmupStage == "new_born" {
 		return false, "account still in newborn stage - only warmup allowed"
 	}
-	
+
 	return true, ""
 }
 
