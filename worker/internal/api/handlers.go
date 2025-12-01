@@ -481,11 +481,11 @@ func (s *Server) handleRevivalAccounts(w http.ResponseWriter, r *http.Request) {
 	accounts := s.monitor.GetRevivalAccounts()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success":         true,
-		"revival_period":  "48 hours",
-		"description":     "Accounts that disconnected are given 48 hours of automatic reconnection attempts",
-		"count":           len(accounts),
-		"accounts":        accounts,
+		"success":        true,
+		"revival_period": "48 hours",
+		"description":    "Accounts that disconnected are given 48 hours of automatic reconnection attempts",
+		"count":          len(accounts),
+		"accounts":       accounts,
 	})
 }
 

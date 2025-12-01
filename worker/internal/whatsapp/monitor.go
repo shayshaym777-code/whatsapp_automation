@@ -316,11 +316,11 @@ func (m *ConnectionMonitor) GetReconnectStats() map[string]interface{} {
 		}
 
 		revivalStatus[phone] = map[string]interface{}{
-			"disconnected_since":    disconnectedTime.Format(time.RFC3339),
-			"hours_disconnected":    timeSince.Hours(),
-			"hours_remaining":       remaining.Hours(),
-			"revival_expired":       timeSince > RevivalPeriod,
-			"status":                m.getRevivalPhase(timeSince),
+			"disconnected_since": disconnectedTime.Format(time.RFC3339),
+			"hours_disconnected": timeSince.Hours(),
+			"hours_remaining":    remaining.Hours(),
+			"revival_expired":    timeSince > RevivalPeriod,
+			"status":             m.getRevivalPhase(timeSince),
 		}
 	}
 	stats["revival_accounts"] = revivalStatus

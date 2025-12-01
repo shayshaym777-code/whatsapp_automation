@@ -415,7 +415,7 @@ router.post('/campaign/preview', async (req, res, next) => {
 router.get('/accounts/power', async (req, res, next) => {
     try {
         const accounts = await loadBalancer.fetchActiveAccounts();
-
+        
         const summary = accounts.map(acc => ({
             phone: acc.phone,
             stage: acc.stage,
@@ -438,6 +438,145 @@ router.get('/accounts/power', async (req, res, next) => {
         });
     } catch (err) {
         logger.error({ msg: 'power_accounts_error', error: err.message });
+        return next(err);
+    }
+});
+
+// ============================================
+// CAPACITY CHECK - Check before sending
+// ============================================
+
+// GET /api/messages/capacity - Check how many messages can be sent right now
+router.get('/capacity', async (req, res, next) => {
+    try {
+        const accounts = await loadBalancer.fetchActiveAccounts();
+        
+        if (accounts.length === 0) {
+            return res.status(200).json({
+                success: true,
+                ready: false,
+                reason: 'no_accounts',
+                message: 'אין חשבונות מחוברים',
+                totalAccounts: 0,
+                availableAccounts: 0,
+                totalCapacity: 0,
+                accounts: []
+            });
+        }
+
+        // Calculate capacity for each account
+        const accountDetails = [];
+        let totalCapacity = 0;
+        let availableAccounts = 0;
+
+        for (const acc of accounts) {
+            const available = Math.max(0, acc.maxDay - acc.todayCount);
+            
+            accountDetails.push({
+                phone: acc.phone,
+                stage: acc.stage,
+                maxDaily: acc.maxDay,
+                sentToday: acc.todayCount,
+                available: available,
+                canSend: available > 0
+            });
+
+            if (available > 0) {
+                availableAccounts++;
+                totalCapacity += available;
+            }
+        }
+
+        // Sort by available capacity (most available first)
+        accountDetails.sort((a, b) => b.available - a.available);
+
+        const ready = totalCapacity > 0;
+
+        return res.status(200).json({
+            success: true,
+            ready: ready,
+            reason: ready ? 'ok' : 'all_accounts_at_limit',
+            message: ready 
+                ? `מוכן לשליחה! ${availableAccounts} חשבונות פנויים, קיבולת: ${totalCapacity} הודעות`
+                : 'כל החשבונות הגיעו למגבלה היומית',
+            totalAccounts: accounts.length,
+            availableAccounts: availableAccounts,
+            totalCapacity: totalCapacity,
+            accounts: accountDetails
+        });
+    } catch (err) {
+        logger.error(`Capacity check error: ${err.message}`);
+        return res.status(200).json({
+            success: false,
+            ready: false,
+            reason: 'error',
+            message: `שגיאה בבדיקת קיבולת: ${err.message}`,
+            totalAccounts: 0,
+            availableAccounts: 0,
+            totalCapacity: 0,
+            accounts: []
+        });
+    }
+});
+
+// POST /api/messages/can-send - Check if a specific amount of messages can be sent
+router.post('/can-send', async (req, res, next) => {
+    try {
+        const { count } = req.body;
+        
+        if (!count || count < 1) {
+            return res.status(400).json({ 
+                error: 'count is required and must be > 0' 
+            });
+        }
+
+        const accounts = await loadBalancer.fetchActiveAccounts();
+        
+        if (accounts.length === 0) {
+            return res.status(200).json({
+                success: true,
+                canSend: false,
+                requested: count,
+                available: 0,
+                shortage: count,
+                message: `אין חשבונות מחוברים. צריך לחבר חשבונות לפני שליחה.`,
+                accounts: []
+            });
+        }
+
+        // Calculate total available capacity
+        let totalAvailable = 0;
+        const accountCapacity = [];
+
+        for (const acc of accounts) {
+            const available = Math.max(0, acc.maxDay - acc.todayCount);
+            totalAvailable += available;
+            
+            if (available > 0) {
+                accountCapacity.push({
+                    phone: acc.phone,
+                    stage: acc.stage,
+                    available: available
+                });
+            }
+        }
+
+        const canSend = totalAvailable >= count;
+        const shortage = Math.max(0, count - totalAvailable);
+
+        return res.status(200).json({
+            success: true,
+            canSend: canSend,
+            requested: count,
+            available: totalAvailable,
+            shortage: shortage,
+            message: canSend 
+                ? `✅ אפשר לשלוח ${count} הודעות! (קיבולת פנויה: ${totalAvailable})`
+                : `❌ לא ניתן לשלוח ${count} הודעות. קיבולת פנויה: ${totalAvailable}, חסר: ${shortage}`,
+            accounts: accountCapacity
+        });
+    } catch (err) {
+        logger.error(`Can-send check error: ${err.message}`);
         return next(err);
     }
 });
