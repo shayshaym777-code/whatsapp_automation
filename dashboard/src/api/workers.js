@@ -650,3 +650,71 @@ export async function triggerReconnect(phone, workerPort) {
   return res.json()
 }
 
+/**
+ * Toggle warmup mode for an account
+ * @param {string} phone - Phone number
+ * @param {number} workerPort - Worker port
+ * @param {boolean} warmup - true = warmup mode (with limits), false = veteran mode (no limits)
+ */
+export async function setAccountWarmup(phone, workerPort, warmup) {
+  const worker = WORKERS.find(w => w.port === workerPort)
+  if (!worker) throw new Error('Worker not found')
+
+  const url = getWorkerUrl(worker)
+  const res = await fetch(`${url}/accounts/${encodeURIComponent(phone)}/warmup`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ warmup })
+  })
+
+  if (!res.ok) {
+    const text = await res.text()
+    let error = 'Failed to set warmup mode'
+    try {
+      const json = JSON.parse(text)
+      error = json.error || json.message || error
+    } catch (e) {
+      error = text || error
+    }
+    throw new Error(error)
+  }
+
+  return res.json()
+}
+
+/**
+ * Get account capacity (available messages)
+ */
+export async function getAccountCapacity(workerPort) {
+  const worker = WORKERS.find(w => w.port === workerPort)
+  if (!worker) throw new Error('Worker not found')
+
+  const url = getWorkerUrl(worker)
+  const res = await fetch(`${url}/capacity`, {
+    method: 'GET',
+    headers: getHeaders(),
+    signal: AbortSignal.timeout(5000)
+  })
+
+  if (!res.ok) return null
+
+  return res.json()
+}
+
+/**
+ * Get all workers capacity
+ */
+export async function getAllCapacity() {
+  const results = await Promise.all(
+    WORKERS.map(async (worker) => {
+      try {
+        const capacity = await getAccountCapacity(worker.port)
+        return { worker: worker.id, ...capacity }
+      } catch (e) {
+        return { worker: worker.id, accounts: [] }
+      }
+    })
+  )
+  return results
+}
+

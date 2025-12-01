@@ -4,7 +4,8 @@ import {
     WORKERS,
     fetchAllAccounts,
     skipAccountWarmup,
-    triggerReconnect
+    triggerReconnect,
+    setAccountWarmup
 } from '../api/workers'
 
 function Accounts() {
@@ -49,6 +50,19 @@ function Accounts() {
             fetchAccounts()
         } catch (err) {
             alert('Failed to skip warmup: ' + err.message)
+        }
+    }
+
+    const handleToggleWarmup = async (account, enableWarmup) => {
+        const action = enableWarmup ? 'enable warmup (with daily limits)' : 'disable warmup (no limits - veteran mode)'
+        if (!confirm(`${action} for ${account.phone}?`)) return
+
+        try {
+            await setAccountWarmup(account.phone, account.workerPort, enableWarmup)
+            alert(`${account.phone} is now in ${enableWarmup ? 'WARMUP' : 'VETERAN'} mode!`)
+            fetchAccounts()
+        } catch (err) {
+            alert('Failed to toggle warmup: ' + err.message)
         }
     }
 
@@ -184,6 +198,7 @@ function Accounts() {
                             account={account}
                             onReconnect={() => handleReconnect(account)}
                             onSkipWarmup={() => handleSkipWarmup(account)}
+                            onToggleWarmup={(enableWarmup) => handleToggleWarmup(account, enableWarmup)}
                         />
                     ))}
                 </div>
@@ -231,11 +246,12 @@ function getStageInfo(account) {
     return { name: 'Adult', emoji: '🧑', limit: 100 }
 }
 
-function DetailedAccountCard({ account, onReconnect, onSkipWarmup }) {
+function DetailedAccountCard({ account, onReconnect, onSkipWarmup, onToggleWarmup }) {
     const countryFlags = { US: '🇺🇸', IL: '🇮🇱', GB: '🇬🇧' }
     const healthStatus = getHealthStatus(account)
     const stageInfo = getStageInfo(account)
     const isWarmup = !account.warmup_complete && account.connected && account.logged_in
+    const isVeteran = account.warmup_complete || account.is_veteran
     
     const ageHours = account.account_age_hours || 0
     const ageDays = Math.floor(ageHours / 24)
@@ -353,15 +369,27 @@ function DetailedAccountCard({ account, onReconnect, onSkipWarmup }) {
                     </Link>
                 )}
                 
-                {isWarmup && (
-                    <button
-                        onClick={onSkipWarmup}
-                        className="py-2 px-3 bg-orange-500/20 text-orange-400 rounded-lg text-sm font-medium
-                         hover:bg-orange-500/30 transition-colors"
-                        title="Skip Warmup"
-                    >
-                        ⏭️ Skip Warmup
-                    </button>
+                {/* Warmup Toggle Button */}
+                {healthStatus === 'HEALTHY' && (
+                    isVeteran ? (
+                        <button
+                            onClick={() => onToggleWarmup(true)}
+                            className="py-2 px-3 bg-orange-500/20 text-orange-400 rounded-lg text-sm font-medium
+                             hover:bg-orange-500/30 transition-colors"
+                            title="Enable warmup mode (with daily limits)"
+                        >
+                            🔥 Enable Warmup
+                        </button>
+                    ) : (
+                        <button
+                            onClick={() => onToggleWarmup(false)}
+                            className="py-2 px-3 bg-purple-500/20 text-purple-400 rounded-lg text-sm font-medium
+                             hover:bg-purple-500/30 transition-colors"
+                            title="Disable warmup (veteran mode - no daily limits)"
+                        >
+                            🎖️ Make Veteran
+                        </button>
+                    )
                 )}
                 
                 {healthStatus === 'DISCONNECTED' && (

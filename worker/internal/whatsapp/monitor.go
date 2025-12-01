@@ -124,7 +124,7 @@ func (m *ConnectionMonitor) checkAndReconnect() {
 		if acc.Client == nil {
 			continue
 		}
-		
+
 		// === SKIP if StreamReplaced (another device connected) ===
 		// Don't try to reconnect - it will just cause a loop
 		if acc.LastError == "Stream replaced - another device connected" {

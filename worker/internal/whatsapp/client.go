@@ -103,6 +103,11 @@ type AccountClient struct {
 	DisconnectCountReset time.Time // When disconnect count was last reset
 	IsUnstable          bool      // True if account is unstable (many disconnects)
 
+	// Delivery Rate tracking
+	MessagesSent     int // Messages sent today
+	MessagesDelivered int // Messages delivered (got receipt)
+	MessagesFailed   int // Messages that failed
+
 	// Mutex for thread-safe access
 	mu sync.RWMutex
 }
@@ -796,6 +801,23 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 			health.LastAlive = time.Now()
 		}
 
+	case *events.Receipt:
+		// Track message delivery for Delivery Rate calculation
+		if v.Type == events.ReceiptTypeDelivered || v.Type == events.ReceiptTypeRead {
+			acc.mu.Lock()
+			acc.MessagesDelivered++
+			acc.mu.Unlock()
+			
+			// Update health - message was delivered
+			if health := m.GetAccountHealth(phone); health != nil {
+				health.LastAlive = time.Now()
+				if health.Status == StatusSuspicious {
+					health.Status = StatusHealthy
+				}
+			}
+		}
+		m.mu.Unlock()
+
 	case *events.StreamReplaced:
 		log.Printf("[%s] 🚨 Stream replaced! Another client connected with same session", phone)
 		acc.Connected = false
@@ -1028,6 +1050,12 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 	go m.reportMessageToMaster(fromPhone, err == nil, err)
 
 	if err != nil {
+		// Track failed message for delivery rate
+		acc.mu.Lock()
+		acc.MessagesFailed++
+		acc.MessagesSent++
+		acc.mu.Unlock()
+		
 		// Check if this might be a proxy failure
 		if isProxyError(err) {
 			log.Printf("[%s] Proxy error detected, will rotate on next message", fromPhone)
@@ -1040,6 +1068,7 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 	acc.SessionMsgCount++
 	acc.TotalMsgToday++
 	acc.HourMsgCount++
+	acc.MessagesSent++ // Track for delivery rate
 	acc.mu.Unlock()
 
 	// Also increment session-wide counter
@@ -1828,14 +1857,28 @@ func (m *ClientManager) GetAccountStats() []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(m.accounts))
 	for _, acc := range m.accounts {
 		acc.mu.RLock()
+		
+		// Calculate delivery rate
+		deliveryRate := 100.0
+		if acc.MessagesSent > 0 {
+			deliveryRate = float64(acc.MessagesDelivered) / float64(acc.MessagesSent) * 100
+		}
+		
 		result = append(result, map[string]interface{}{
-			"phone":           acc.Phone,
-			"logged_in":       acc.LoggedIn,
-			"connected":       acc.Connected,
-			"warmup_stage":    acc.WarmupStage,
-			"warmup_complete": acc.WarmupComplete,
-			"session_msgs":    acc.SessionMsgCount,
-			"today_msgs":      acc.TotalMsgToday,
+			"phone":              acc.Phone,
+			"logged_in":          acc.LoggedIn,
+			"connected":          acc.Connected,
+			"warmup_stage":       acc.WarmupStage,
+			"warmup_complete":    acc.WarmupComplete,
+			"is_warmup":          acc.IsInWarmup,
+			"is_unstable":        acc.IsUnstable,
+			"session_msgs":       acc.SessionMsgCount,
+			"today_msgs":         acc.TotalMsgToday,
+			"messages_sent":      acc.MessagesSent,
+			"messages_delivered": acc.MessagesDelivered,
+			"messages_failed":    acc.MessagesFailed,
+			"delivery_rate":      deliveryRate,
+			"disconnect_count":   acc.DisconnectCount,
 		})
 		acc.mu.RUnlock()
 	}

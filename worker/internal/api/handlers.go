@@ -554,6 +554,47 @@ func (s *Server) handleSkipWarmup(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// POST /accounts/{phone}/warmup - Set warmup mode on/off
+// warmup=true: new account with daily limits
+// warmup=false: veteran account, no daily limits (only rate limiting)
+func (s *Server) handleSetWarmup(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	phone := vars["phone"]
+
+	if phone == "" {
+		writeError(w, http.StatusBadRequest, "phone is required")
+		return
+	}
+
+	var reqBody struct {
+		Warmup bool `json:"warmup"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	err := s.client.SetAccountWarmup(phone, reqBody.Warmup)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to set warmup mode: "+err.Error())
+		return
+	}
+
+	mode := "VETERAN (no daily limits)"
+	if reqBody.Warmup {
+		mode = "WARMUP (with daily limits)"
+	}
+
+	log.Printf("[WARMUP] Account %s set to %s mode", phone, mode)
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"phone":   phone,
+		"warmup":  reqBody.Warmup,
+		"message": fmt.Sprintf("Account set to %s mode", mode),
+	})
+}
+
 // GET /proxy/stats - Get proxy pool statistics with sticky assignments
 func (s *Server) handleProxyStats(w http.ResponseWriter, r *http.Request) {
 	var stats map[string]interface{}
