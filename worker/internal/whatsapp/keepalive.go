@@ -20,10 +20,10 @@ const (
 	HealthCheckInterval = 5 * time.Minute
 	
 	// TempBlockCheckInterval - how often to check if temp blocked accounts are available
-	TempBlockCheckInterval = 5 * time.Hour // Check every 5 hours
+	TempBlockCheckInterval = 1 * time.Hour // Check every hour
 	
-	// DefaultTempBlockDuration - default temp block duration (WhatsApp usually blocks for 6 hours)
-	DefaultTempBlockDuration = 6 * time.Hour
+	// DefaultTempBlockDuration - default temp block duration (WhatsApp restricts for ~5 hours)
+	DefaultTempBlockDuration = 5 * time.Hour
 )
 
 // Keep alive config per stage - less messages for new accounts, more touches
@@ -574,18 +574,24 @@ func isBlockedError(err error) bool {
 	return false
 }
 
-// isTempBlockedError checks if error indicates temporary block (usually 6 hours)
+// isTempBlockedError checks if error indicates temporary restriction (~5 hours)
+// WhatsApp shows: "Your account is restricted right now"
+// You CAN reply to existing chats, but CANNOT start new chats
 func isTempBlockedError(err error) bool {
 	if err == nil {
 		return false
 	}
 	errStr := strings.ToLower(err.Error())
 	tempBlockIndicators := []string{
+		"restricted",      // "Your account is restricted"
 		"temporarily",
 		"try again later",
 		"wait",
 		"too many",
 		"rate limit",
+		"spam",
+		"automated",
+		"bulk",
 	}
 	for _, indicator := range tempBlockIndicators {
 		if strings.Contains(errStr, indicator) {
@@ -595,33 +601,51 @@ func isTempBlockedError(err error) bool {
 	return false
 }
 
-// markAccountTempBlocked marks an account as temporarily blocked
+// markAccountTempBlocked marks an account as temporarily restricted
+// WhatsApp restriction lasts ~5 hours, during which:
+// - CAN reply to existing chats
+// - CANNOT start new chats
 func (m *ClientManager) markAccountTempBlocked(phone string, err error) {
 	health := m.getOrCreateHealth(phone)
 	health.Status = StatusTempBlocked
 	health.TempBlockedAt = time.Now()
-	health.TempBlockDuration = DefaultTempBlockDuration
+	health.TempBlockDuration = DefaultTempBlockDuration // 5 hours
 	health.LastError = err.Error()
-	log.Printf("[TempBlock] ⏸️ Account %s temporarily blocked, will check again in %v", phone, DefaultTempBlockDuration)
+	log.Printf("[Restricted] ⏸️ Account %s restricted for ~5 hours (can reply, cannot start new chats)", phone)
 }
 
-// checkTempBlockedAccounts checks if temp blocked accounts are available again
+// checkTempBlockedAccounts checks if restricted accounts are available again
+// Runs every hour to check if the ~5 hour restriction has lifted
 func (m *ClientManager) checkTempBlockedAccounts() {
-	log.Println("[TempBlock] 🔍 Checking temporarily blocked accounts...")
+	restrictedCount := 0
+	for _, health := range accountHealthMap {
+		if health.Status == StatusTempBlocked {
+			restrictedCount++
+		}
+	}
+	
+	if restrictedCount == 0 {
+		return // No restricted accounts
+	}
+	
+	log.Printf("[Restricted] 🔍 Checking %d restricted accounts...", restrictedCount)
 	
 	for phone, health := range accountHealthMap {
 		if health.Status != StatusTempBlocked {
 			continue
 		}
 		
-		// Check if block duration has passed
-		if time.Since(health.TempBlockedAt) < health.TempBlockDuration {
-			remaining := health.TempBlockDuration - time.Since(health.TempBlockedAt)
-			log.Printf("[TempBlock] ⏳ Account %s still blocked, %v remaining", phone, remaining.Round(time.Minute))
+		// Calculate remaining time
+		elapsed := time.Since(health.TempBlockedAt)
+		remaining := health.TempBlockDuration - elapsed
+		
+		if remaining > 0 {
+			log.Printf("[Restricted] ⏳ Account %s: %v remaining (restricted at %s)", 
+				phone, remaining.Round(time.Minute), health.TempBlockedAt.Format("15:04"))
 			continue
 		}
 		
-		log.Printf("[TempBlock] 🔄 Checking if account %s is available again...", phone)
+		log.Printf("[Restricted] 🔄 Restriction should be lifted for %s, testing...", phone)
 		
 		// Try to reconnect and send a test presence
 		m.mu.RLock()
@@ -636,12 +660,12 @@ func (m *ClientManager) checkTempBlockedAccounts() {
 		err := acc.Client.SendPresence(types.PresenceAvailable)
 		if err != nil {
 			if isTempBlockedError(err) || isBlockedError(err) {
-				// Still blocked, extend the wait
-				health.TempBlockedAt = time.Now()
-				log.Printf("[TempBlock] ❌ Account %s still blocked, will check again in %v", phone, DefaultTempBlockDuration)
+				// Still restricted, wait another hour
+				log.Printf("[Restricted] ❌ Account %s still restricted, will check again in 1 hour", phone)
 			} else {
-				// Different error, might be connection issue
-				log.Printf("[TempBlock] ⚠️ Account %s error: %v", phone, err)
+				// Different error, might be connection issue - try reconnect
+				log.Printf("[Restricted] ⚠️ Account %s connection error: %v, trying reconnect...", phone, err)
+				go m.TriggerReconnect(phone)
 			}
 		} else {
 			// Success! Account is available again
@@ -649,7 +673,7 @@ func (m *ClientManager) checkTempBlockedAccounts() {
 			health.TempBlockedAt = time.Time{}
 			health.LastError = ""
 			health.ConsecutiveFailures = 0
-			log.Printf("[TempBlock] ✅ Account %s is available again!", phone)
+			log.Printf("[Restricted] ✅ Account %s restriction lifted! Back to normal.", phone)
 			
 			// Send offline presence
 			_ = acc.Client.SendPresence(types.PresenceUnavailable)
@@ -662,7 +686,9 @@ func (m *ClientManager) checkTempBlockedAccounts() {
 	}
 }
 
-// SendTouchToBlockedAccount sends a presence touch to a blocked account (keeps it "warm")
+// SendTouchToBlockedAccount sends a presence touch to a restricted account
+// During restriction: CAN reply to existing chats, CANNOT start new chats
+// We keep the account "warm" by sending presence
 func (m *ClientManager) SendTouchToBlockedAccount(phone string) {
 	m.mu.RLock()
 	acc, exists := m.accounts[phone]
@@ -672,18 +698,25 @@ func (m *ClientManager) SendTouchToBlockedAccount(phone string) {
 		return
 	}
 	
-	// Just try to connect/send presence - even if blocked, it shows activity
+	health := m.getOrCreateHealth(phone)
+	remaining := health.TempBlockDuration - time.Since(health.TempBlockedAt)
+	
+	// Just try to connect/send presence - keeps the connection alive
 	if !acc.Connected {
 		_ = acc.Client.Connect()
 		time.Sleep(2 * time.Second)
 	}
 	
-	// Try presence - might fail if blocked, but that's OK
+	// Try presence - this should work even when restricted
 	_ = acc.Client.SendPresence(types.PresenceAvailable)
 	time.Sleep(1 * time.Second)
 	_ = acc.Client.SendPresence(types.PresenceUnavailable)
 	
-	log.Printf("[TempBlock] 👆 Sent touch to blocked account %s", phone)
+	if remaining > 0 {
+		log.Printf("[Restricted] 👆 Touch sent to %s (%v remaining)", phone, remaining.Round(time.Minute))
+	} else {
+		log.Printf("[Restricted] 👆 Touch sent to %s (checking if available...)", phone)
+	}
 }
 
 // TriggerReconnect manually triggers reconnect for an account
