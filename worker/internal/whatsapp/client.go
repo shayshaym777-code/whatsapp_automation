@@ -910,12 +910,12 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 	stage := acc.WarmupStage
 	sessionCount := acc.SessionMsgCount
 	acc.mu.RUnlock()
-	
+
 	stageDelay := getDelayByStage(stage)
-	
+
 	// === ANTI-BAN: Simulate typing (human-like delay) ===
 	typingDelay := calculateTypingDelay(variedMessage)
-	
+
 	// Total delay = stage delay + typing simulation
 	totalDelay := stageDelay + typingDelay
 
@@ -942,7 +942,7 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 		log.Printf("[%s] Failed to send presence: %v", fromPhone, err)
 	}
 
-	log.Printf("[%s] Sending to %s (stage: %s, delay: %v, proxy: %s)", 
+	log.Printf("[%s] Sending to %s (stage: %s, delay: %v, proxy: %s)",
 		fromPhone, toPhone, stage, totalDelay, proxyInfo)
 
 	// Wait for total delay
@@ -982,7 +982,7 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 	m.sessionMsgCount++
 	m.mu.Unlock()
 
-	log.Printf("[%s] ✅ Message sent to %s (session: %d, today: %d)", 
+	log.Printf("[%s] ✅ Message sent to %s (session: %d, today: %d)",
 		fromPhone, toPhone, acc.SessionMsgCount, acc.TotalMsgToday)
 
 	return &SendResult{
@@ -1003,31 +1003,31 @@ func (m *ClientManager) applyPauses(msgCount int) time.Duration {
 		pause := rand.Intn(900) + 900 // 900-1800 seconds
 		return time.Duration(pause) * time.Second
 	}
-	
+
 	if msgCount%50 == 0 {
 		// Session break: 5-15 minutes
 		pause := rand.Intn(600) + 300 // 300-900 seconds
 		return time.Duration(pause) * time.Second
 	}
-	
+
 	if msgCount%10 == 0 {
 		// Short break: 30-120 seconds
 		pause := rand.Intn(90) + 30 // 30-120 seconds
 		return time.Duration(pause) * time.Second
 	}
-	
+
 	return 0
 }
 
 // getDelayByStage returns the delay based on warmup stage
 func getDelayByStage(stage string) time.Duration {
 	delays := map[string][2]int{
-		"new_born": {30, 60},  // 30-60 seconds
-		"baby":     {20, 40},  // 20-40 seconds
-		"toddler":  {10, 20},  // 10-20 seconds
-		"teen":     {5, 10},   // 5-10 seconds
-		"adult":    {3, 7},    // 3-7 seconds
-		"veteran":  {1, 5},    // 1-5 seconds
+		"new_born": {30, 60}, // 30-60 seconds
+		"baby":     {20, 40}, // 20-40 seconds
+		"toddler":  {10, 20}, // 10-20 seconds
+		"teen":     {5, 10},  // 5-10 seconds
+		"adult":    {3, 7},   // 3-7 seconds
+		"veteran":  {1, 5},   // 1-5 seconds
 	}
 
 	d, ok := delays[stage]
@@ -1038,12 +1038,12 @@ func getDelayByStage(stage string) time.Duration {
 	// Add jitter
 	base := rand.Intn(d[1]-d[0]+1) + d[0]
 	jitter := (rand.Float64() - 0.5) * 2 // -1 to +1 second
-	
+
 	totalSeconds := float64(base) + jitter
 	if totalSeconds < 1 {
 		totalSeconds = 1
 	}
-	
+
 	return time.Duration(totalSeconds * float64(time.Second))
 }
 
@@ -1071,7 +1071,6 @@ func isProxyError(err error) bool {
 	}
 	return false
 }
-
 
 // applyMessageVariation adds invisible characters for uniqueness
 func applyMessageVariation(message string) string {
@@ -1617,7 +1616,7 @@ func (m *ClientManager) applyAccountMeta(acc *AccountClient, meta *AccountMeta) 
 	}
 
 	acc.WarmupComplete = meta.WarmupComplete
-	
+
 	// Restore warmup stage
 	if meta.WarmupStage != "" {
 		acc.WarmupStage = meta.WarmupStage
@@ -1713,13 +1712,13 @@ func (m *ClientManager) GetAccountStats() []map[string]interface{} {
 	for _, acc := range m.accounts {
 		acc.mu.RLock()
 		result = append(result, map[string]interface{}{
-			"phone":            acc.Phone,
-			"logged_in":        acc.LoggedIn,
-			"connected":        acc.Connected,
-			"warmup_stage":     acc.WarmupStage,
-			"warmup_complete":  acc.WarmupComplete,
-			"session_msgs":     acc.SessionMsgCount,
-			"today_msgs":       acc.TotalMsgToday,
+			"phone":           acc.Phone,
+			"logged_in":       acc.LoggedIn,
+			"connected":       acc.Connected,
+			"warmup_stage":    acc.WarmupStage,
+			"warmup_complete": acc.WarmupComplete,
+			"session_msgs":    acc.SessionMsgCount,
+			"today_msgs":      acc.TotalMsgToday,
 		})
 		acc.mu.RUnlock()
 	}
