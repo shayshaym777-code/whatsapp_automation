@@ -39,7 +39,10 @@ app.use((req, res) => {
 // Error handler
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
-    logger.error({ msg: 'unhandled_error', error: err.message, stack: err.stack });
+    logger.error(`Unhandled error: ${err.message}`);
+    if (err.stack) {
+        logger.debug(err.stack);
+    }
     res.status(500).json({ error: 'Internal Server Error' });
 });
 
@@ -65,7 +68,7 @@ function scheduleDailyResetTask() {
         setInterval(resetDailyCounts, 24 * 60 * 60 * 1000);
     }, msToMidnight);
 
-    logger.info({ msg: 'daily_reset_scheduled', next_run: night.toISOString() });
+    logger.info(`Daily reset scheduled for ${night.toISOString()}`);
 }
 
 async function resetDailyCounts() {
@@ -73,12 +76,12 @@ async function resetDailyCounts() {
         const result = await query(
             `UPDATE warmup_accounts SET messages_sent_today = 0 RETURNING phone_number`
         );
-        logger.info({ msg: 'daily_counts_reset', accounts: result.rows.length });
+        logger.info(`Daily counts reset for ${result.rows.length} accounts`);
 
         // Also update warmup stages based on account age
         await updateWarmupStages();
     } catch (err) {
-        logger.error({ msg: 'daily_reset_failed', error: err.message });
+        logger.error(`Daily reset failed: ${err.message}`);
     }
 }
 
@@ -105,9 +108,9 @@ async function updateWarmupStages() {
             );
         }
 
-        logger.info({ msg: 'warmup_stages_updated' });
+        logger.info('Warmup stages updated');
     } catch (err) {
-        logger.error({ msg: 'warmup_stages_update_failed', error: err.message });
+        logger.error(`Warmup stages update failed: ${err.message}`);
     }
 }
 
@@ -118,7 +121,7 @@ async function updateWarmupStages() {
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
-    logger.info({ msg: 'server_started', port: PORT });
+    logger.info(`🚀 Master server started on port ${PORT}`);
     
     // Start scheduled tasks
     scheduleDailyResetTask();

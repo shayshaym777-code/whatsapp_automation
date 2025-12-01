@@ -86,14 +86,14 @@ func generateMinimalSilence(seconds int) []byte {
 	header := []byte{
 		// OGG page header
 		0x4F, 0x67, 0x67, 0x53, // "OggS"
-		0x00,                   // version
-		0x02,                   // header type (BOS)
+		0x00,                                           // version
+		0x02,                                           // header type (BOS)
 		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // granule position
 		0x00, 0x00, 0x00, 0x00, // serial number
 		0x00, 0x00, 0x00, 0x00, // page sequence
 		0x00, 0x00, 0x00, 0x00, // CRC (will be ignored for our purpose)
-		0x01,       // segment count
-		0x13,       // segment size (19 bytes)
+		0x01,                                           // segment count
+		0x13,                                           // segment size (19 bytes)
 		0x4F, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64, // "OpusHead"
 		0x01,       // version
 		0x01,       // channel count (mono)
@@ -106,14 +106,14 @@ func generateMinimalSilence(seconds int) []byte {
 	// Add comment header page
 	comment := []byte{
 		0x4F, 0x67, 0x67, 0x53, // "OggS"
-		0x00,                   // version
-		0x00,                   // header type
+		0x00,                                           // version
+		0x00,                                           // header type
 		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // granule position
 		0x00, 0x00, 0x00, 0x00, // serial number
 		0x01, 0x00, 0x00, 0x00, // page sequence
 		0x00, 0x00, 0x00, 0x00, // CRC
-		0x01,       // segment count
-		0x10,       // segment size (16 bytes)
+		0x01,                                           // segment count
+		0x10,                                           // segment size (16 bytes)
 		0x4F, 0x70, 0x75, 0x73, 0x54, 0x61, 0x67, 0x73, // "OpusTags"
 		0x00, 0x00, 0x00, 0x00, // vendor string length
 		0x00, 0x00, 0x00, 0x00, // user comment list length
@@ -121,7 +121,7 @@ func generateMinimalSilence(seconds int) []byte {
 
 	// Add audio data pages with silence
 	// Each frame is 20ms of silence
-	framesNeeded := seconds * 50 // 50 frames per second (20ms each)
+	framesNeeded := seconds * 50             // 50 frames per second (20ms each)
 	silenceFrame := []byte{0xF8, 0xFF, 0xFE} // Opus silence frame
 
 	audio := make([]byte, 0)
@@ -132,8 +132,8 @@ func generateMinimalSilence(seconds int) []byte {
 	// Wrap audio in OGG page
 	audioPage := []byte{
 		0x4F, 0x67, 0x67, 0x53, // "OggS"
-		0x00,                   // version
-		0x04,                   // header type (EOS)
+		0x00,                                           // version
+		0x04,                                           // header type (EOS)
 		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // granule position
 		0x00, 0x00, 0x00, 0x00, // serial number
 		0x02, 0x00, 0x00, 0x00, // page sequence
