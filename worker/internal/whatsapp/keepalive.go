@@ -13,12 +13,38 @@ import (
 )
 
 const (
-	// KeepAliveInterval - how often to send keep alive messages
-	KeepAliveInterval = 60 * time.Minute // Every hour
+	// KeepAliveInterval - base interval for keep alive check
+	KeepAliveInterval = 30 * time.Minute // Check every 30 min
 
 	// HealthCheckInterval - how often to check account health
 	HealthCheckInterval = 5 * time.Minute
 )
+
+// Keep alive config per stage - less messages for new accounts, more touches
+type KeepAliveConfig struct {
+	MessagesPerDay   int           // How many keep alive messages per day
+	TouchesPerDay    int           // How many "touches" (no message) per day  
+	MinInterval      time.Duration // Minimum time between actions
+}
+
+// Stage-based keep alive configuration
+var keepAliveByStage = map[string]KeepAliveConfig{
+	"newborn": {MessagesPerDay: 1, TouchesPerDay: 8, MinInterval: 2 * time.Hour},   // Day 0-3: 1 msg, 8 touches
+	"infant":  {MessagesPerDay: 2, TouchesPerDay: 6, MinInterval: 90 * time.Minute}, // Day 4-7: 2 msgs, 6 touches
+	"child":   {MessagesPerDay: 3, TouchesPerDay: 5, MinInterval: 60 * time.Minute}, // Day 8-14: 3 msgs, 5 touches
+	"teen":    {MessagesPerDay: 4, TouchesPerDay: 4, MinInterval: 45 * time.Minute}, // Day 15-30: 4 msgs, 4 touches
+	"adult":   {MessagesPerDay: 6, TouchesPerDay: 3, MinInterval: 30 * time.Minute}, // Day 31+: 6 msgs, 3 touches
+}
+
+// Track daily actions per account
+var keepAliveDailyActions = make(map[string]*DailyKeepAliveStats)
+
+type DailyKeepAliveStats struct {
+	Date           string
+	MessagesSent   int
+	TouchesDone    int
+	LastActionTime time.Time
+}
 
 // Keep alive messages - short and natural
 var keepAliveMessages = []string{
@@ -178,8 +204,9 @@ func (m *ClientManager) StopKeepAlive() {
 	}
 }
 
-// sendKeepAliveMessages sends a keep alive message from each account to external numbers
-// We send to external numbers (not our accounts) to look more natural
+// sendKeepAliveMessages performs keep alive actions based on account stage
+// New accounts: less messages, more touches (presence, typing, etc)
+// Older accounts: more messages allowed
 func (m *ClientManager) sendKeepAliveMessages() {
 	activeAccounts := m.GetActiveAccounts()
 
@@ -188,50 +215,171 @@ func (m *ClientManager) sendKeepAliveMessages() {
 		return
 	}
 
-	if len(keepAliveTargetPhones) == 0 {
-		log.Println("[KeepAlive] No target phones configured for keep alive")
+	log.Printf("[KeepAlive] Processing keep alive for %d accounts", len(activeAccounts))
+	today := time.Now().Format("2006-01-02")
+
+	for _, acc := range activeAccounts {
+		// Get or create daily stats
+		stats := m.getOrCreateDailyStats(acc.Phone, today)
+		
+		// Get stage config
+		stage := m.getAccountStage(acc)
+		config := keepAliveByStage[stage]
+		if config.MessagesPerDay == 0 {
+			config = keepAliveByStage["adult"] // Default
+		}
+
+		// Check minimum interval
+		if time.Since(stats.LastActionTime) < config.MinInterval {
+			continue // Too soon for this account
+		}
+
+		// Decide: message or touch?
+		canSendMessage := stats.MessagesSent < config.MessagesPerDay
+		canDoTouch := stats.TouchesDone < config.TouchesPerDay
+		
+		if !canSendMessage && !canDoTouch {
+			continue // Daily limit reached
+		}
+
+		// Prefer touches for new accounts (70% touch, 30% message)
+		// For older accounts (50% touch, 50% message)
+		doTouch := false
+		if canDoTouch && canSendMessage {
+			touchChance := 70 // New accounts prefer touches
+			if stage == "adult" || stage == "teen" {
+				touchChance = 50
+			}
+			doTouch = rand.Intn(100) < touchChance
+		} else if canDoTouch {
+			doTouch = true
+		}
+
+		if doTouch {
+			// Do a "touch" - presence activity without sending message
+			m.performKeepAliveTouch(acc)
+			stats.TouchesDone++
+			stats.LastActionTime = time.Now()
+			log.Printf("[KeepAlive] 👆 Touch done: %s (stage: %s, touches: %d/%d)", 
+				acc.Phone, stage, stats.TouchesDone, config.TouchesPerDay)
+		} else if canSendMessage && len(keepAliveTargetPhones) > 0 {
+			// Send actual message to external number
+			targetPhone := keepAliveTargetPhones[rand.Intn(len(keepAliveTargetPhones))]
+			message := keepAliveMessages[rand.Intn(len(keepAliveMessages))]
+			
+			err := m.sendKeepAliveMessage(acc, targetPhone, message)
+			health := m.getOrCreateHealth(acc.Phone)
+			
+			if err != nil {
+				health.ConsecutiveFailures++
+				health.LastError = err.Error()
+				if isBlockedError(err) {
+					health.Status = StatusBlocked
+					log.Printf("[KeepAlive] 🔴 BLOCKED: %s - %v", acc.Phone, err)
+				} else {
+					health.Status = StatusSuspicious
+					log.Printf("[KeepAlive] ⚠️ Failed: %s - %v", acc.Phone, err)
+				}
+			} else {
+				health.Status = StatusHealthy
+				health.LastAlive = time.Now()
+				health.LastMessageSent = time.Now()
+				health.ConsecutiveFailures = 0
+				stats.MessagesSent++
+				stats.LastActionTime = time.Now()
+				log.Printf("[KeepAlive] ✅ Message sent: %s -> %s (stage: %s, msgs: %d/%d)", 
+					acc.Phone, targetPhone, stage, stats.MessagesSent, config.MessagesPerDay)
+			}
+		}
+
+		// Random delay between accounts (10-30 seconds)
+		delay := 10 + rand.Intn(20)
+		time.Sleep(time.Duration(delay) * time.Second)
+	}
+}
+
+// performKeepAliveTouch does presence activity without sending a message
+func (m *ClientManager) performKeepAliveTouch(acc *AccountClient) {
+	if acc.Client == nil {
 		return
 	}
 
-	log.Printf("[KeepAlive] Sending keep alive for %d accounts to external numbers", len(activeAccounts))
+	ctx := context.Background()
+	
+	// Random touch activity
+	activities := []string{"presence", "typing", "read"}
+	activity := activities[rand.Intn(len(activities))]
 
-	for _, sender := range activeAccounts {
-		// Pick a random external target phone (not our accounts!)
-		targetPhone := keepAliveTargetPhones[rand.Intn(len(keepAliveTargetPhones))]
-
-		// Pick random message
-		message := keepAliveMessages[rand.Intn(len(keepAliveMessages))]
-
-		// Send keep alive to external number
-		err := m.sendKeepAliveMessage(sender, targetPhone, message)
-
-		// Update health status
-		health := m.getOrCreateHealth(sender.Phone)
+	switch activity {
+	case "presence":
+		// Just mark as online
+		_ = acc.Client.SendPresence(types.PresenceAvailable)
+		time.Sleep(time.Duration(2+rand.Intn(3)) * time.Second)
+		_ = acc.Client.SendPresence(types.PresenceUnavailable)
 		
-		if err != nil {
-			health.ConsecutiveFailures++
-			health.LastError = err.Error()
-			
-			// Check if blocked
-			if isBlockedError(err) {
-				health.Status = StatusBlocked
-				log.Printf("[KeepAlive] 🔴 ACCOUNT BLOCKED: %s - %v", sender.Phone, err)
-			} else {
-				health.Status = StatusSuspicious
-				log.Printf("[KeepAlive] ⚠️ Keep alive failed for %s: %v", sender.Phone, err)
-			}
-		} else {
-			health.Status = StatusHealthy
-			health.LastAlive = time.Now()
-			health.LastMessageSent = time.Now()
-			health.ConsecutiveFailures = 0
-			health.LastError = ""
-			log.Printf("[KeepAlive] ✅ Keep alive sent: %s -> %s (external)", sender.Phone, targetPhone)
+	case "typing":
+		// Start typing in a random chat then stop
+		if len(keepAliveTargetPhones) > 0 {
+			targetPhone := keepAliveTargetPhones[rand.Intn(len(keepAliveTargetPhones))]
+			jid := types.NewJID(targetPhone, types.DefaultUserServer)
+			_ = acc.Client.SendChatPresence(jid, types.ChatPresenceComposing, types.ChatPresenceMediaText)
+			time.Sleep(time.Duration(1+rand.Intn(2)) * time.Second)
+			_ = acc.Client.SendChatPresence(jid, types.ChatPresencePaused, types.ChatPresenceMediaText)
 		}
+		
+	case "read":
+		// Get contacts and mark something as read
+		contacts, err := acc.Client.Store.Contacts.GetAllContacts(ctx)
+		if err == nil && len(contacts) > 0 {
+			// Just accessing contacts is activity
+			_ = len(contacts)
+		}
+	}
+}
 
-		// Delay between accounts (30-90 seconds)
-		delay := 30 + rand.Intn(60)
-		time.Sleep(time.Duration(delay) * time.Second)
+// getOrCreateDailyStats gets or creates daily stats for an account
+func (m *ClientManager) getOrCreateDailyStats(phone, date string) *DailyKeepAliveStats {
+	key := phone + "_" + date
+	if stats, exists := keepAliveDailyActions[key]; exists {
+		return stats
+	}
+	
+	stats := &DailyKeepAliveStats{
+		Date:         date,
+		MessagesSent: 0,
+		TouchesDone:  0,
+	}
+	keepAliveDailyActions[key] = stats
+	
+	// Clean old entries (keep only today)
+	for k := range keepAliveDailyActions {
+		if !strings.HasSuffix(k, "_"+date) {
+			delete(keepAliveDailyActions, k)
+		}
+	}
+	
+	return stats
+}
+
+// getAccountStage determines the warmup stage of an account
+func (m *ClientManager) getAccountStage(acc *AccountClient) string {
+	if acc.CreatedAt.IsZero() {
+		return "adult" // Unknown = treat as adult
+	}
+	
+	days := int(time.Since(acc.CreatedAt).Hours() / 24)
+	
+	switch {
+	case days <= 3:
+		return "newborn"
+	case days <= 7:
+		return "infant"
+	case days <= 14:
+		return "child"
+	case days <= 30:
+		return "teen"
+	default:
+		return "adult"
 	}
 }
 
