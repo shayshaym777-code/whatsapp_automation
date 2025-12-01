@@ -124,6 +124,22 @@ func (m *ConnectionMonitor) checkAndReconnect() {
 		if acc.Client == nil {
 			continue
 		}
+		
+		// === SKIP if StreamReplaced (another device connected) ===
+		// Don't try to reconnect - it will just cause a loop
+		if acc.LastError == "Stream replaced - another device connected" {
+			// Only log once every 5 minutes
+			m.mu.RLock()
+			lastAttempt := m.lastReconnectAttempt[phone]
+			m.mu.RUnlock()
+			if time.Since(lastAttempt) > 5*time.Minute {
+				log.Printf("[MONITOR] ⚠️ Account %s has StreamReplaced - another device is connected. Skipping reconnect.", phone)
+				m.mu.Lock()
+				m.lastReconnectAttempt[phone] = time.Now()
+				m.mu.Unlock()
+			}
+			continue
+		}
 
 		// If client says it's connected, clear disconnected tracking and skip
 		if acc.Client.IsConnected() {
