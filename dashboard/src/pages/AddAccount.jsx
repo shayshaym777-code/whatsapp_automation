@@ -1,12 +1,15 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useState, useEffect } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
     WORKERS,
     connectAccountWithPairingCode,
     detectCountry,
     getWorkerByCountry,
-    getWarmupStages
+    fetchAllAccounts
 } from '../api/workers'
+
+// v8.0: Add account page with session tracking
+// Each phone can have up to 4 sessions (backups)
 
 // Country prefixes
 const COUNTRY_PREFIXES = {
@@ -21,13 +24,38 @@ const COUNTRY_PREFIXES = {
 
 function AddAccount() {
     const navigate = useNavigate()
-    const [phone, setPhone] = useState('')
+    const [searchParams] = useSearchParams()
+    const existingPhone = searchParams.get('phone') // For adding more sessions
+    
+    const [phone, setPhone] = useState(existingPhone || '')
     const [selectedWorker, setSelectedWorker] = useState(WORKERS[0])
     const [pairingCode, setPairingCode] = useState(null)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState(null)
     const [status, setStatus] = useState('idle') // idle, requesting, waiting, success, error
-    const [skipWarmup, setSkipWarmup] = useState(false)
+    const [sessionNumber, setSessionNumber] = useState(1) // Which session (1-4)
+    const [existingSessions, setExistingSessions] = useState(0) // How many sessions already exist
+
+    // Check existing sessions for this phone
+    useEffect(() => {
+        if (existingPhone) {
+            checkExistingSessions(existingPhone)
+        }
+    }, [existingPhone])
+
+    const checkExistingSessions = async (phoneNum) => {
+        try {
+            const accounts = await fetchAllAccounts()
+            const account = accounts.find(a => a.phone === phoneNum)
+            if (account) {
+                const sessions = account.sessions_total || 1
+                setExistingSessions(sessions)
+                setSessionNumber(sessions + 1)
+            }
+        } catch (err) {
+            console.error('Failed to check sessions:', err)
+        }
+    }
 
     // Auto-detect country and add prefix when phone changes
     const handlePhoneChange = (value) => {
@@ -40,6 +68,11 @@ function AddAccount() {
         const country = detectCountry(cleanValue)
         const worker = getWorkerByCountry(country)
         setSelectedWorker(worker)
+
+        // Check existing sessions
+        if (cleanValue.length > 8) {
+            checkExistingSessions(cleanValue)
+        }
     }
 
     // Add country prefix
@@ -76,7 +109,7 @@ function AddAccount() {
         setPairingCode(null)
 
         try {
-            const data = await connectAccountWithPairingCode(cleanPhone, selectedWorker, skipWarmup)
+            const data = await connectAccountWithPairingCode(cleanPhone, selectedWorker, true) // Always skip warmup in v8.0
 
             if (data.pairing_code) {
                 setPairingCode(data.pairing_code)
@@ -116,7 +149,8 @@ function AddAccount() {
                 if (account?.logged_in) {
                     clearInterval(poll)
                     setStatus('success')
-                    setTimeout(() => navigate('/accounts'), 2000)
+                    // Update session count
+                    setExistingSessions(prev => prev + 1)
                 }
             } catch (err) {
                 console.error('Polling error:', err)
@@ -124,49 +158,86 @@ function AddAccount() {
         }, 5000)
     }
 
-    const warmupStages = getWarmupStages()
+    const remainingSessions = 4 - (existingSessions + (status === 'success' ? 1 : 0))
+    const isAddingMoreSessions = existingPhone !== null
 
     return (
         <div className="max-w-2xl mx-auto space-y-8 animate-fade-in">
             {/* Header */}
             <div>
-                <h2 className="text-3xl font-bold text-white mb-2">Add Account</h2>
-                <p className="text-gray-400">Connect a new WhatsApp account using pairing code</p>
+                <h2 className="text-3xl font-bold text-white mb-2">
+                    {isAddingMoreSessions ? 'Add Session' : 'Add Account'}
+                </h2>
+                <p className="text-gray-400">
+                    {isAddingMoreSessions 
+                        ? `Adding backup session for ${existingPhone}`
+                        : 'Connect a new WhatsApp account (scan up to 4 times for backup)'
+                    }
+                </p>
             </div>
+
+            {/* Session Progress (if adding to existing phone) */}
+            {(existingSessions > 0 || status === 'success') && (
+                <div className="card bg-blue-500/10 border-blue-500/30">
+                    <h3 className="text-lg font-semibold text-blue-400 mb-3">
+                        📱 Session Progress for {phone}
+                    </h3>
+                    <div className="flex gap-2 mb-3">
+                        {[1, 2, 3, 4].map(i => (
+                            <div
+                                key={i}
+                                className={`flex-1 h-4 rounded ${
+                                    i <= existingSessions + (status === 'success' ? 1 : 0)
+                                        ? 'bg-green-500'
+                                        : 'bg-gray-700'
+                                }`}
+                            />
+                        ))}
+                    </div>
+                    <p className="text-gray-400 text-sm">
+                        {existingSessions + (status === 'success' ? 1 : 0)}/4 sessions connected
+                        {remainingSessions > 0 && status !== 'success' && (
+                            <span className="text-yellow-400"> • Need {remainingSessions} more for full backup</span>
+                        )}
+                    </p>
+                </div>
+            )}
 
             {/* Form */}
             <div className="card">
                 {/* Quick Country Prefix Buttons */}
-                <div className="mb-6">
-                    <label className="block text-sm font-medium text-gray-300 mb-3">
-                        Quick Prefix
-                    </label>
-                    <div className="flex flex-wrap gap-2">
-                        <button
-                            onClick={() => addPrefix('US')}
-                            className="px-4 py-2 bg-wa-bg border border-wa-border rounded-lg hover:border-wa-green transition-colors"
-                        >
-                            🇺🇸 +1 (US)
-                        </button>
-                        <button
-                            onClick={() => addPrefix('IL')}
-                            className="px-4 py-2 bg-wa-bg border border-wa-border rounded-lg hover:border-wa-green transition-colors"
-                        >
-                            🇮🇱 +972 (IL)
-                        </button>
-                        <button
-                            onClick={() => addPrefix('GB')}
-                            className="px-4 py-2 bg-wa-bg border border-wa-border rounded-lg hover:border-wa-green transition-colors"
-                        >
-                            🇬🇧 +44 (UK)
-                        </button>
+                {!isAddingMoreSessions && (
+                    <div className="mb-6">
+                        <label className="block text-sm font-medium text-gray-300 mb-3">
+                            Quick Prefix
+                        </label>
+                        <div className="flex flex-wrap gap-2">
+                            <button
+                                onClick={() => addPrefix('US')}
+                                className="px-4 py-2 bg-wa-bg border border-wa-border rounded-lg hover:border-wa-green transition-colors"
+                            >
+                                🇺🇸 +1 (US)
+                            </button>
+                            <button
+                                onClick={() => addPrefix('IL')}
+                                className="px-4 py-2 bg-wa-bg border border-wa-border rounded-lg hover:border-wa-green transition-colors"
+                            >
+                                🇮🇱 +972 (IL)
+                            </button>
+                            <button
+                                onClick={() => addPrefix('GB')}
+                                className="px-4 py-2 bg-wa-bg border border-wa-border rounded-lg hover:border-wa-green transition-colors"
+                            >
+                                🇬🇧 +44 (UK)
+                            </button>
+                        </div>
                     </div>
-                </div>
+                )}
 
                 {/* Step 1: Phone Number */}
                 <div className="mb-6">
                     <label className="block text-sm font-medium text-gray-300 mb-3">
-                        1. Enter Phone Number
+                        1. Phone Number
                     </label>
                     <input
                         type="tel"
@@ -174,17 +245,50 @@ function AddAccount() {
                         onChange={(e) => handlePhoneChange(e.target.value)}
                         placeholder="+1234567890"
                         className="input text-2xl font-mono tracking-wider"
-                        disabled={status === 'waiting'}
+                        disabled={status === 'waiting' || isAddingMoreSessions}
                     />
-                    <p className="text-xs text-gray-500 mt-2">
-                        Click a country button above or type the full number with country code
-                    </p>
+                    {!isAddingMoreSessions && (
+                        <p className="text-xs text-gray-500 mt-2">
+                            Click a country button above or type the full number with country code
+                        </p>
+                    )}
                 </div>
 
-                {/* Step 2: Worker Selection */}
+                {/* Session Number Selection */}
                 <div className="mb-6">
                     <label className="block text-sm font-medium text-gray-300 mb-3">
-                        2. Worker (auto-detected: {selectedWorker.flag} {selectedWorker.country})
+                        2. Session Number (1-4)
+                    </label>
+                    <div className="grid grid-cols-4 gap-3">
+                        {[1, 2, 3, 4].map((num) => {
+                            const isUsed = num <= existingSessions
+                            return (
+                                <button
+                                    key={num}
+                                    onClick={() => !isUsed && setSessionNumber(num)}
+                                    disabled={isUsed || status === 'waiting'}
+                                    className={`p-4 rounded-xl border transition-all duration-200 ${
+                                        isUsed 
+                                            ? 'bg-green-500/20 border-green-500 text-green-400 cursor-not-allowed'
+                                            : sessionNumber === num
+                                                ? 'bg-wa-green/20 border-wa-green text-white'
+                                                : 'bg-wa-bg border-wa-border text-gray-400 hover:border-wa-green/50'
+                                    }`}
+                                >
+                                    <div className="text-2xl mb-1">{isUsed ? '✅' : num}</div>
+                                    <div className="text-xs">
+                                        {isUsed ? 'Connected' : `Session ${num}`}
+                                    </div>
+                                </button>
+                            )
+                        })}
+                    </div>
+                </div>
+
+                {/* Step 3: Worker Selection */}
+                <div className="mb-6">
+                    <label className="block text-sm font-medium text-gray-300 mb-3">
+                        3. Worker (auto-detected: {selectedWorker.flag} {selectedWorker.country})
                     </label>
                     <div className="grid grid-cols-3 gap-3">
                         {WORKERS.map((worker) => (
@@ -202,38 +306,6 @@ function AddAccount() {
                             </button>
                         ))}
                     </div>
-                </div>
-
-                {/* Skip Warmup Checkbox */}
-                <div className="mb-6">
-                    <label className="flex items-center gap-3 cursor-pointer group">
-                        <div className="relative">
-                            <input
-                                type="checkbox"
-                                checked={skipWarmup}
-                                onChange={(e) => setSkipWarmup(e.target.checked)}
-                                className="sr-only"
-                                disabled={status === 'waiting'}
-                            />
-                            <div className={`w-6 h-6 rounded border-2 transition-all ${
-                                skipWarmup 
-                                    ? 'bg-wa-green border-wa-green' 
-                                    : 'border-gray-500 group-hover:border-wa-green'
-                            }`}>
-                                {skipWarmup && (
-                                    <svg className="w-4 h-4 text-white m-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                                    </svg>
-                                )}
-                            </div>
-                        </div>
-                        <div>
-                            <span className="text-white font-medium">Skip Warmup</span>
-                            <p className="text-xs text-gray-500">
-                                Check this for accounts that don't need warmup (existing/trusted accounts)
-                            </p>
-                        </div>
-                    </label>
                 </div>
 
                 {/* Error */}
@@ -259,7 +331,7 @@ function AddAccount() {
                         </div>
                         <div className="mt-4 flex items-center justify-center gap-2 text-sm text-gray-500">
                             <div className="w-4 h-4 border-2 border-wa-green border-t-transparent rounded-full animate-spin"></div>
-                            Waiting for pairing...
+                            Waiting for pairing... (Session {sessionNumber})
                         </div>
                     </div>
                 )}
@@ -268,8 +340,38 @@ function AddAccount() {
                 {status === 'success' && (
                     <div className="mb-6 p-6 bg-green-500/20 border border-green-500/30 rounded-xl text-center">
                         <div className="text-5xl mb-3">✅</div>
-                        <p className="text-green-400 font-semibold text-xl">Account connected!</p>
-                        <p className="text-gray-400 text-sm mt-2">Redirecting to accounts...</p>
+                        <p className="text-green-400 font-semibold text-xl">
+                            Session {sessionNumber} connected!
+                        </p>
+                        {remainingSessions > 0 ? (
+                            <div className="mt-4">
+                                <p className="text-yellow-400 text-sm mb-3">
+                                    ⚠️ {remainingSessions} more session(s) needed for full backup
+                                </p>
+                                <button
+                                    onClick={() => {
+                                        setStatus('idle')
+                                        setPairingCode(null)
+                                        setSessionNumber(existingSessions + 2)
+                                    }}
+                                    className="btn-primary"
+                                >
+                                    ➕ Add Session {existingSessions + 2}
+                                </button>
+                            </div>
+                        ) : (
+                            <div className="mt-4">
+                                <p className="text-green-400 text-sm mb-3">
+                                    🎉 All 4 sessions connected! Full backup ready.
+                                </p>
+                                <button
+                                    onClick={() => navigate('/accounts')}
+                                    className="btn-primary"
+                                >
+                                    Go to Accounts
+                                </button>
+                            </div>
+                        )}
                     </div>
                 )}
 
@@ -277,7 +379,7 @@ function AddAccount() {
                 {status !== 'success' && (
                     <button
                         onClick={requestPairingCode}
-                        disabled={loading || !phone || status === 'waiting'}
+                        disabled={loading || !phone || status === 'waiting' || sessionNumber <= existingSessions}
                         className="btn-primary w-full flex items-center justify-center gap-2"
                     >
                         {loading ? (
@@ -290,46 +392,35 @@ function AddAccount() {
                         ) : (
                             <>
                                 <span>🔗</span>
-                                Get Pairing Code
+                                Get Pairing Code (Session {sessionNumber})
                             </>
                         )}
                     </button>
                 )}
             </div>
 
-            {/* Warmup Info */}
-            {!skipWarmup && (
-                <div className="card">
-                    <h3 className="text-lg font-semibold text-white mb-4">🔥 Auto Warmup</h3>
-                    <p className="text-gray-400 text-sm mb-4">
-                        New accounts automatically enter a warmup period to prevent bans.
+            {/* Info Box */}
+            <div className="card">
+                <h3 className="text-lg font-semibold text-white mb-4">📱 Why 4 Sessions?</h3>
+                <div className="space-y-3 text-sm text-gray-400">
+                    <p>
+                        <strong className="text-white">Backup & Failover:</strong> Each phone can have up to 4 linked devices (sessions).
+                        If one session disconnects, the system automatically switches to the next one.
                     </p>
-                    <div className="space-y-3">
-                        {warmupStages.map((stage) => (
-                            <div key={stage.day} className="flex items-center gap-3 text-sm">
-                                <div className="w-8 h-8 rounded-full bg-orange-500/20 text-orange-400 flex items-center justify-center font-bold">
-                                    {stage.day}
-                                </div>
-                                <div>
-                                    <span className="text-white">{stage.description}</span>
-                                    <span className="text-gray-500 ml-2">({stage.maxMessages} msgs max)</span>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            )}
-
-            {/* Skip Warmup Warning */}
-            {skipWarmup && (
-                <div className="card border-yellow-500/30">
-                    <h3 className="text-lg font-semibold text-yellow-400 mb-2">⚠️ Warmup Disabled</h3>
-                    <p className="text-gray-400 text-sm">
-                        This account will be able to send up to 100 messages/day immediately.
-                        Only skip warmup for accounts that are already established and trusted.
+                    <p>
+                        <strong className="text-white">How it works:</strong>
+                    </p>
+                    <ul className="list-disc list-inside space-y-1 ml-4">
+                        <li>Session 1 is active (sends messages)</li>
+                        <li>Sessions 2-4 are backups (standby)</li>
+                        <li>If Session 1 drops → Session 2 takes over automatically</li>
+                        <li>All 4 down → Alert sent to Telegram</li>
+                    </ul>
+                    <p className="text-yellow-400 mt-4">
+                        ⚠️ <strong>Important:</strong> Scan QR 4 times from different devices/browsers for each phone number!
                     </p>
                 </div>
-            )}
+            </div>
         </div>
     )
 }
