@@ -83,6 +83,7 @@ type AccountClient struct {
 	LastWarmupSent time.Time // Last warmup message time
 	WarmupComplete bool      // True after 3 days of warmup
 	WarmupStage    string    // Current stage: new_born, baby, toddler, teen, adult, veteran
+	IsInWarmup     bool      // TRUE = new account with daily limits, FALSE = veteran no limits
 
 	// Message tracking for pauses and limits
 	SessionMsgCount int       // Messages sent in current session (reset on pause)
@@ -940,7 +941,7 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 		return nil, fmt.Errorf("account %s not logged in", fromPhone)
 	}
 
-	// === TRACKING: Update counters (no hard limits - just tracking) ===
+	// === TRACKING: Update counters ===
 	m.resetCountersIfNeeded(acc)
 
 	acc.mu.RLock()
@@ -948,7 +949,17 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 	if stage == "" {
 		stage = "adult" // Default stage
 	}
+	isWarmup := acc.IsInWarmup
+	todayMsgs := acc.TotalMsgToday
 	acc.mu.RUnlock()
+
+	// === CHECK DAILY LIMIT (only for warmup accounts) ===
+	if isWarmup {
+		dailyLimit := getDailyLimitForStage(stage)
+		if todayMsgs >= dailyLimit {
+			return nil, fmt.Errorf("daily limit reached for warmup account %s (sent: %d, limit: %d)", fromPhone, todayMsgs, dailyLimit)
+		}
+	}
 
 	// Parse recipient JID
 	recipientJID, err := parseJID(toPhone)
@@ -1877,6 +1888,93 @@ func (m *ClientManager) GetConnectionStatus() []map[string]interface{} {
 		acc.mu.RUnlock()
 	}
 	return result
+}
+
+// GetAccountsCapacity returns sending capacity for all accounts
+func (m *ClientManager) GetAccountsCapacity() []map[string]interface{} {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make([]map[string]interface{}, 0, len(m.accounts))
+	for phone, acc := range m.accounts {
+		acc.mu.RLock()
+
+		// Calculate available capacity
+		dailyLimit := 0
+		available := 0
+
+		if acc.IsInWarmup {
+			// Warmup accounts have daily limits based on stage
+			dailyLimit = getDailyLimitForStage(acc.WarmupStage)
+			available = dailyLimit - acc.TotalMsgToday
+			if available < 0 {
+				available = 0
+			}
+		} else {
+			// Veteran accounts have no daily limit
+			dailyLimit = -1 // -1 means unlimited
+			available = 9999 // Effectively unlimited
+		}
+
+		result = append(result, map[string]interface{}{
+			"phone":        phone,
+			"connected":    acc.Connected && acc.LoggedIn,
+			"in_warmup":    acc.IsInWarmup,
+			"stage":        acc.WarmupStage,
+			"daily_limit":  dailyLimit,
+			"sent_today":   acc.TotalMsgToday,
+			"available":    available,
+		})
+		acc.mu.RUnlock()
+	}
+	return result
+}
+
+// getDailyLimitForStage returns daily message limit based on warmup stage
+func getDailyLimitForStage(stage string) int {
+	switch stage {
+	case "newborn":
+		return 10
+	case "infant":
+		return 25
+	case "child":
+		return 50
+	case "teen":
+		return 100
+	case "adult":
+		return 200
+	default:
+		return 50 // Default
+	}
+}
+
+// SetAccountWarmup sets warmup mode on/off for an account
+// warmup=true: new account with daily limits
+// warmup=false: veteran account, no daily limits (only rate limiting)
+func (m *ClientManager) SetAccountWarmup(phone string, warmup bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	acc, exists := m.accounts[phone]
+	if !exists {
+		return fmt.Errorf("account not found: %s", phone)
+	}
+
+	acc.mu.Lock()
+	acc.IsInWarmup = warmup
+	if !warmup {
+		acc.WarmupComplete = true
+		acc.WarmupStage = "veteran"
+	}
+	acc.mu.Unlock()
+
+	if warmup {
+		log.Printf("[%s] 🔥 Account set to WARMUP mode (daily limits apply)", phone)
+	} else {
+		log.Printf("[%s] ✅ Account set to VETERAN mode (no daily limits)", phone)
+	}
+
+	return nil
 }
 
 // registerWithMaster registers a new account with the Master server for warmup tracking

@@ -126,6 +126,7 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	r.HandleFunc("/warmup/summary", s.handleWarmupSummary).Methods(http.MethodGet)
 	r.HandleFunc("/warmup/force", s.handleWarmupForce).Methods(http.MethodPost)
 	r.HandleFunc("/accounts/{phone}/skip-warmup", s.handleSkipWarmup).Methods(http.MethodPost)
+	r.HandleFunc("/accounts/{phone}/warmup", s.handleSetWarmup).Methods(http.MethodPost) // Set warmup on/off
 
 	// Reconnect endpoint
 	r.HandleFunc("/accounts/{phone}/reconnect", s.handleAccountReconnect).Methods(http.MethodPost)
@@ -814,5 +815,46 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		"disconnected": disconnected,
 		"reconnecting": reconnecting,
 		"accounts":     connections,
+	})
+}
+
+// POST /accounts/{phone}/warmup - Set warmup mode on/off for an account
+// Body: {"warmup": true/false}
+// warmup=true: new account with daily limits
+// warmup=false: veteran account, no daily limits (only rate limiting)
+func (s *Server) handleSetWarmup(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	phone := vars["phone"]
+
+	if phone == "" {
+		writeError(w, http.StatusBadRequest, "phone is required")
+		return
+	}
+
+	var req struct {
+		Warmup bool `json:"warmup"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	err := s.client.SetAccountWarmup(phone, req.Warmup)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "Account not found: "+phone)
+		return
+	}
+
+	status := "veteran (no daily limits)"
+	if req.Warmup {
+		status = "warmup (daily limits apply)"
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"phone":   phone,
+		"warmup":  req.Warmup,
+		"message": "Account " + phone + " set to " + status,
 	})
 }
