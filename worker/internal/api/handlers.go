@@ -119,6 +119,7 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 
 	// Monitor endpoints
 	r.HandleFunc("/monitor/stats", s.handleMonitorStats).Methods(http.MethodGet)
+	r.HandleFunc("/monitor/revival", s.handleRevivalAccounts).Methods(http.MethodGet)
 
 	// Warmup endpoints
 	r.HandleFunc("/warmup/status", s.handleWarmupStatus).Methods(http.MethodGet)
@@ -472,6 +473,19 @@ func (s *Server) handleMonitorStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"monitor": stats,
+	})
+}
+
+// GET /monitor/revival - Get accounts currently in 48h revival period
+func (s *Server) handleRevivalAccounts(w http.ResponseWriter, r *http.Request) {
+	accounts := s.monitor.GetRevivalAccounts()
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":         true,
+		"revival_period":  "48 hours",
+		"description":     "Accounts that disconnected are given 48 hours of automatic reconnection attempts",
+		"count":           len(accounts),
+		"accounts":        accounts,
 	})
 }
 

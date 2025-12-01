@@ -16,6 +16,7 @@ type ConnectionMonitor struct {
 	// Track reconnection attempts to prevent spam
 	lastReconnectAttempt map[string]time.Time
 	reconnectFailures    map[string]int
+	disconnectedSince    map[string]time.Time // NEW: Track when account first disconnected
 	mu                   sync.RWMutex
 
 	// Control
@@ -28,10 +29,14 @@ const (
 	DefaultCheckInterval = 30 * time.Second
 	// DefaultReconnectCooldown is minimum time between reconnection attempts for same account
 	DefaultReconnectCooldown = 60 * time.Second
-	// MaxReconnectFailures before giving up on an account
-	MaxReconnectFailures = 5
+	// MaxReconnectFailures before temporarily pausing (will resume after cooldown)
+	MaxReconnectFailures = 10
 	// FailureCooldownMultiplier increases cooldown after each failure
 	FailureCooldownMultiplier = 2
+	// RevivalPeriod - how long to keep trying to revive a disconnected account
+	RevivalPeriod = 48 * time.Hour
+	// ReconnectInterval - try to reconnect every X minutes during revival period
+	ReconnectIntervalMinutes = 15
 )
 
 // NewConnectionMonitor creates a new connection monitor
@@ -42,6 +47,7 @@ func NewConnectionMonitor(manager *ClientManager) *ConnectionMonitor {
 		reconnectCooldown:    DefaultReconnectCooldown,
 		lastReconnectAttempt: make(map[string]time.Time),
 		reconnectFailures:    make(map[string]int),
+		disconnectedSince:    make(map[string]time.Time), // NEW
 		stopChan:             make(chan struct{}),
 	}
 }
@@ -82,6 +88,7 @@ func (m *ConnectionMonitor) monitorLoop() {
 }
 
 // checkAndReconnect checks all accounts and reconnects disconnected ones
+// Accounts get 48 hours of revival attempts before being marked as dead
 func (m *ConnectionMonitor) checkAndReconnect() {
 	m.manager.mu.RLock()
 	accounts := make([]*AccountClient, 0, len(m.manager.accounts))
@@ -95,6 +102,8 @@ func (m *ConnectionMonitor) checkAndReconnect() {
 	reconnected := 0
 	skippedNotLoggedIn := 0
 	disconnectedCount := 0
+	expiredCount := 0
+	revivingCount := 0
 
 	for i, acc := range accounts {
 		phone := phones[i]
@@ -112,42 +121,96 @@ func (m *ConnectionMonitor) checkAndReconnect() {
 			continue
 		}
 
-		// If client says it's connected, skip
+		// If client says it's connected, clear disconnected tracking and skip
 		if acc.Client.IsConnected() {
+			m.mu.Lock()
+			delete(m.disconnectedSince, phone)
+			m.mu.Unlock()
 			continue
 		}
 
-		// Account was logged in but is now disconnected - try to reconnect
+		// Account was logged in but is now disconnected
 		disconnectedCount++
+
+		// Track when this account first disconnected
+		m.mu.Lock()
+		if _, exists := m.disconnectedSince[phone]; !exists {
+			m.disconnectedSince[phone] = time.Now()
+			log.Printf("[MONITOR] 🔴 Account %s disconnected - starting 48h revival period", phone)
+		}
+		disconnectedTime := m.disconnectedSince[phone]
+		m.mu.Unlock()
+
+		// Check if revival period expired (48 hours)
+		timeSinceDisconnect := time.Since(disconnectedTime)
+		if timeSinceDisconnect > RevivalPeriod {
+			expiredCount++
+			// Don't delete the account! Just mark it as needing attention
+			// Log only once per hour to avoid spam
+			if int(timeSinceDisconnect.Hours())%1 == 0 && int(timeSinceDisconnect.Minutes())%60 < 1 {
+				log.Printf("[MONITOR] ⚠️ Account %s revival period expired (%.1f hours) - needs manual attention",
+					phone, timeSinceDisconnect.Hours())
+			}
+			continue
+		}
+
+		revivingCount++
+
+		// Try to reconnect during the revival period
 		if m.shouldAttemptReconnect(phone) {
+			remainingHours := (RevivalPeriod - timeSinceDisconnect).Hours()
+			log.Printf("[MONITOR] 🔄 Attempting revival for %s (%.1f hours remaining)", phone, remainingHours)
+
 			if m.attemptReconnect(phone, acc) {
 				reconnected++
+				// Clear disconnected tracking on success
+				m.mu.Lock()
+				delete(m.disconnectedSince, phone)
+				m.mu.Unlock()
+				log.Printf("[MONITOR] ✅ Account %s revived successfully!", phone)
 			}
 		}
 	}
 
-	// Only log if something actually happened (reduces log spam significantly)
-	if reconnected > 0 {
-		log.Printf("[MONITOR] Reconnected %d accounts", reconnected)
-	}
-	if disconnectedCount > 0 && reconnected == 0 {
-		// Only log disconnected count occasionally, not every check
-		// This is handled by shouldAttemptReconnect cooldown
+	// Log summary periodically
+	if reconnected > 0 || revivingCount > 0 || expiredCount > 0 {
+		log.Printf("[MONITOR] Status: %d reconnected, %d reviving, %d expired (48h+), %d never logged in",
+			reconnected, revivingCount, expiredCount, skippedNotLoggedIn)
 	}
 }
 
 // shouldAttemptReconnect checks if enough time has passed since last attempt
+// During the 48h revival period, we try every 15 minutes with exponential backoff
 func (m *ConnectionMonitor) shouldAttemptReconnect(phone string) bool {
 	m.mu.RLock()
 	lastAttempt, exists := m.lastReconnectAttempt[phone]
 	failures := m.reconnectFailures[phone]
+	disconnectedSince, isDisconnected := m.disconnectedSince[phone]
 	m.mu.RUnlock()
 
 	if !exists {
 		return true
 	}
 
-	// Calculate cooldown based on number of failures
+	// During revival period (first 48 hours), use different logic
+	if isDisconnected {
+		timeSinceDisconnect := time.Since(disconnectedSince)
+
+		// First 2 hours: try every 5 minutes
+		if timeSinceDisconnect < 2*time.Hour {
+			return time.Since(lastAttempt) >= 5*time.Minute
+		}
+
+		// Hours 2-12: try every 15 minutes
+		if timeSinceDisconnect < 12*time.Hour {
+			return time.Since(lastAttempt) >= 15*time.Minute
+		}
+
+		// Hours 12-48: try every 30 minutes
+		return time.Since(lastAttempt) >= 30*time.Minute
+	}
+
+	// Normal cooldown logic (for non-revival cases)
 	cooldown := m.reconnectCooldown
 	for i := 0; i < failures; i++ {
 		cooldown *= FailureCooldownMultiplier
@@ -157,10 +220,10 @@ func (m *ConnectionMonitor) shouldAttemptReconnect(phone string) bool {
 		}
 	}
 
-	// Check if we've exceeded max failures
+	// After max failures, wait longer but don't give up completely
 	if failures >= MaxReconnectFailures {
-		// Only log once when hitting the limit
-		return false
+		// Try once per hour even after max failures
+		return time.Since(lastAttempt) >= 1*time.Hour
 	}
 
 	return time.Since(lastAttempt) >= cooldown
@@ -235,6 +298,7 @@ func (m *ConnectionMonitor) GetReconnectStats() map[string]interface{} {
 	stats["running"] = m.running
 	stats["check_interval"] = m.checkInterval.String()
 	stats["accounts_with_failures"] = len(m.reconnectFailures)
+	stats["revival_period_hours"] = RevivalPeriod.Hours()
 
 	failureDetails := make(map[string]int)
 	for phone, failures := range m.reconnectFailures {
@@ -242,5 +306,66 @@ func (m *ConnectionMonitor) GetReconnectStats() map[string]interface{} {
 	}
 	stats["failure_counts"] = failureDetails
 
+	// Revival status for disconnected accounts
+	revivalStatus := make(map[string]map[string]interface{})
+	for phone, disconnectedTime := range m.disconnectedSince {
+		timeSince := time.Since(disconnectedTime)
+		remaining := RevivalPeriod - timeSince
+		if remaining < 0 {
+			remaining = 0
+		}
+
+		revivalStatus[phone] = map[string]interface{}{
+			"disconnected_since":    disconnectedTime.Format(time.RFC3339),
+			"hours_disconnected":    timeSince.Hours(),
+			"hours_remaining":       remaining.Hours(),
+			"revival_expired":       timeSince > RevivalPeriod,
+			"status":                m.getRevivalPhase(timeSince),
+		}
+	}
+	stats["revival_accounts"] = revivalStatus
+	stats["accounts_in_revival"] = len(revivalStatus)
+
 	return stats
+}
+
+// getRevivalPhase returns the current phase of revival for logging
+func (m *ConnectionMonitor) getRevivalPhase(timeSince time.Duration) string {
+	if timeSince > RevivalPeriod {
+		return "EXPIRED - needs manual attention"
+	}
+	if timeSince < 2*time.Hour {
+		return "CRITICAL - trying every 5 min"
+	}
+	if timeSince < 12*time.Hour {
+		return "ACTIVE - trying every 15 min"
+	}
+	return "EXTENDED - trying every 30 min"
+}
+
+// GetRevivalAccounts returns list of accounts currently in revival period
+func (m *ConnectionMonitor) GetRevivalAccounts() []map[string]interface{} {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	accounts := make([]map[string]interface{}, 0)
+	for phone, disconnectedTime := range m.disconnectedSince {
+		timeSince := time.Since(disconnectedTime)
+		remaining := RevivalPeriod - timeSince
+		if remaining < 0 {
+			remaining = 0
+		}
+
+		accounts = append(accounts, map[string]interface{}{
+			"phone":              phone,
+			"disconnected_since": disconnectedTime.Format(time.RFC3339),
+			"hours_disconnected": timeSince.Hours(),
+			"hours_remaining":    remaining.Hours(),
+			"revival_expired":    timeSince > RevivalPeriod,
+			"phase":              m.getRevivalPhase(timeSince),
+			"failures":           m.reconnectFailures[phone],
+		})
+	}
+
+	return accounts
 }

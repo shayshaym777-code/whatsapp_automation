@@ -431,6 +431,27 @@ export async function getMonitorStats(worker) {
 }
 
 /**
+ * Get revival accounts from a worker (accounts in 48h revival period)
+ */
+export async function getRevivalAccounts(worker) {
+  try {
+    const url = getWorkerUrl(worker)
+    const res = await fetch(`${url}/monitor/revival`, {
+      method: 'GET',
+      headers: getHeaders(),
+      signal: AbortSignal.timeout(5000)
+    })
+
+    if (!res.ok) return null
+
+    return res.json()
+  } catch (error) {
+    console.error(`Failed to get revival accounts from ${worker.id}:`, error)
+    return null
+  }
+}
+
+/**
  * Cleanup inactive accounts
  */
 export async function cleanupAccounts(worker) {

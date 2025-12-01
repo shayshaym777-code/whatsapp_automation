@@ -222,10 +222,10 @@ router.post('/campaign', async (req, res, next) => {
         // Use Power Score distribution
         const result = await loadBalancer.sendCampaign(messages);
 
-        logger.info({ 
-            msg: 'campaign_complete', 
-            sent: result.results.length, 
-            errors: result.errors.length 
+        logger.info({
+            msg: 'campaign_complete',
+            sent: result.results.length,
+            errors: result.errors.length
         });
 
         return res.status(200).json({
@@ -394,7 +394,7 @@ router.post('/bulk-send-v2', async (req, res, next) => {
 router.post('/campaign/preview', async (req, res, next) => {
     try {
         const { recipients } = req.body;
-        
+
         if (!recipients || !Array.isArray(recipients) || recipients.length === 0) {
             return res.status(400).json({ error: 'recipients array is required' });
         }
@@ -415,7 +415,7 @@ router.post('/campaign/preview', async (req, res, next) => {
 router.get('/accounts/power', async (req, res, next) => {
     try {
         const accounts = await loadBalancer.fetchActiveAccounts();
-        
+
         const summary = accounts.map(acc => ({
             phone: acc.phone,
             stage: acc.stage,
