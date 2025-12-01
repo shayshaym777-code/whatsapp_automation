@@ -187,7 +187,7 @@ func (m *ClientManager) StartHumanActivitySimulator(phone string) {
 			m.mu.RLock()
 			acc, exists := m.accounts[phone]
 			m.mu.RUnlock()
-			
+
 			var waitDuration time.Duration
 			if exists && acc != nil && acc.IsUnstable {
 				// Unstable accounts: wait 2-4 hours between activities
@@ -208,7 +208,7 @@ func (m *ClientManager) StartHumanActivitySimulator(phone string) {
 				m.mu.RLock()
 				acc, exists := m.accounts[phone]
 				m.mu.RUnlock()
-				
+
 				// For unstable accounts - do light touches only, don't skip!
 				if exists && acc != nil && acc.IsUnstable {
 					log.Printf("[Activity] 🐢 Light touch for unstable account %s", phone)
@@ -221,7 +221,7 @@ func (m *ClientManager) StartHumanActivitySimulator(phone string) {
 					}
 					continue
 				}
-				
+
 				// Check if temp blocked - send touch anyway
 				if health := m.GetAccountHealth(phone); health != nil && health.Status == StatusTempBlocked {
 					log.Printf("[Activity] 👆 Touch for temp-blocked account %s", phone)
@@ -233,7 +233,7 @@ func (m *ClientManager) StartHumanActivitySimulator(phone string) {
 					}
 					continue
 				}
-				
+
 				m.performWeightedActivity(phone)
 			case <-stop:
 				log.Printf("[Activity] 🛑 Stopped activity simulator for %s", phone)

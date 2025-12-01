@@ -10,6 +10,8 @@ import (
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/whatsapp-automation/worker/internal/telegram"
 )
 
 const (
@@ -18,24 +20,24 @@ const (
 
 	// HealthCheckInterval - how often to check account health
 	HealthCheckInterval = 5 * time.Minute
-	
+
 	// TempBlockCheckInterval - how often to check if temp blocked accounts are available
 	TempBlockCheckInterval = 1 * time.Hour // Check every hour
-	
+
 	// DefaultTempBlockDuration - default temp block duration (WhatsApp restricts for ~5 hours)
 	DefaultTempBlockDuration = 5 * time.Hour
 )
 
 // Keep alive config per stage - less messages for new accounts, more touches
 type KeepAliveConfig struct {
-	MessagesPerDay   int           // How many keep alive messages per day
-	TouchesPerDay    int           // How many "touches" (no message) per day  
-	MinInterval      time.Duration // Minimum time between actions
+	MessagesPerDay int           // How many keep alive messages per day
+	TouchesPerDay  int           // How many "touches" (no message) per day
+	MinInterval    time.Duration // Minimum time between actions
 }
 
 // Stage-based keep alive configuration
 var keepAliveByStage = map[string]KeepAliveConfig{
-	"newborn": {MessagesPerDay: 1, TouchesPerDay: 8, MinInterval: 2 * time.Hour},   // Day 0-3: 1 msg, 8 touches
+	"newborn": {MessagesPerDay: 1, TouchesPerDay: 8, MinInterval: 2 * time.Hour},    // Day 0-3: 1 msg, 8 touches
 	"infant":  {MessagesPerDay: 2, TouchesPerDay: 6, MinInterval: 90 * time.Minute}, // Day 4-7: 2 msgs, 6 touches
 	"child":   {MessagesPerDay: 3, TouchesPerDay: 5, MinInterval: 60 * time.Minute}, // Day 8-14: 3 msgs, 5 touches
 	"teen":    {MessagesPerDay: 4, TouchesPerDay: 4, MinInterval: 45 * time.Minute}, // Day 15-30: 4 msgs, 4 touches
@@ -157,11 +159,11 @@ type AccountHealth struct {
 	LastError           string
 	ConsecutiveFailures int
 	MessagesToday       int
-	
+
 	// Temporary block tracking
-	TempBlockedAt       time.Time // When account was temp blocked
-	TempBlockDuration   time.Duration // How long the block lasts (usually 6 hours)
-	LastBlockCheck      time.Time // Last time we checked if block expired
+	TempBlockedAt     time.Time     // When account was temp blocked
+	TempBlockDuration time.Duration // How long the block lasts (usually 6 hours)
+	LastBlockCheck    time.Time     // Last time we checked if block expired
 }
 
 // keepAliveStop channel to stop keep alive
@@ -184,7 +186,7 @@ func (m *ClientManager) StartKeepAlive() {
 
 	// Health check ticker - every 5 minutes
 	healthTicker := time.NewTicker(HealthCheckInterval)
-	
+
 	// Temp block check ticker - every 5 hours
 	tempBlockTicker := time.NewTicker(TempBlockCheckInterval)
 
@@ -244,20 +246,20 @@ func (m *ClientManager) sendKeepAliveMessages() {
 			m.SendTouchToBlockedAccount(acc.Phone)
 			continue
 		}
-		
+
 		// For unstable accounts - don't skip, just reduce activity
 		// NEVER disconnect or stop trying!
-		
+
 		// Get or create daily stats
 		stats := m.getOrCreateDailyStats(acc.Phone, today)
-		
+
 		// Get stage config
 		stage := m.getAccountStage(acc)
 		config := keepAliveByStage[stage]
 		if config.MessagesPerDay == 0 {
 			config = keepAliveByStage["adult"] // Default
 		}
-		
+
 		// Reduce activity for accounts with many disconnects (but not unstable yet)
 		if acc.DisconnectCount > 5 {
 			config.MinInterval = config.MinInterval * 2 // Double the interval
@@ -272,7 +274,7 @@ func (m *ClientManager) sendKeepAliveMessages() {
 		// Decide: message or touch?
 		canSendMessage := stats.MessagesSent < config.MessagesPerDay
 		canDoTouch := stats.TouchesDone < config.TouchesPerDay
-		
+
 		if !canSendMessage && !canDoTouch {
 			continue // Daily limit reached
 		}
@@ -295,17 +297,17 @@ func (m *ClientManager) sendKeepAliveMessages() {
 			m.performKeepAliveTouch(acc)
 			stats.TouchesDone++
 			stats.LastActionTime = time.Now()
-			log.Printf("[KeepAlive] 👆 Touch done: %s (stage: %s, touches: %d/%d)", 
+			log.Printf("[KeepAlive] 👆 Touch done: %s (stage: %s, touches: %d/%d)",
 				acc.Phone, stage, stats.TouchesDone, config.TouchesPerDay)
 		} else if canSendMessage {
 			// For warmup/keep alive: prefer internal accounts first, then external
 			// New accounts (< 3 days) MUST only send to internal accounts!
 			var targetPhone string
 			var message string
-			
+
 			daysSinceCreation := time.Since(acc.CreatedAt).Hours() / 24
 			isNewAccount := daysSinceCreation < 3 || stage == "newborn" || stage == "infant"
-			
+
 			if isNewAccount {
 				// New accounts: ONLY internal accounts (warmup between friends)
 				targetPhone = m.getRandomInternalAccountForKeepAlive(acc.Phone)
@@ -328,22 +330,26 @@ func (m *ClientManager) sendKeepAliveMessages() {
 					continue
 				}
 			}
-			
+
 			message = keepAliveMessages[rand.Intn(len(keepAliveMessages))]
 			err := m.sendKeepAliveMessage(acc, targetPhone, message)
-			
+
 			if err != nil {
 				health.ConsecutiveFailures++
 				health.LastError = err.Error()
-				
+
 				// Check if it's a temporary block (usually 6 hours)
 				if isTempBlockedError(err) {
 					m.markAccountTempBlocked(acc.Phone, err)
 					log.Printf("[KeepAlive] ⏸️ TEMP BLOCKED: %s - will retry in 5 hours", acc.Phone)
+					// Send Telegram alert
+					go telegram.AlertBlocked(acc.Phone, m.WorkerID, "Temporarily blocked (6 hours)")
 				} else if isBlockedError(err) {
-					// Permanent block - but still keep trying!
+					// Permanent block - send alert!
 					health.Status = StatusBlocked
-					log.Printf("[KeepAlive] 🔴 BLOCKED: %s - %v (will keep trying)", acc.Phone, err)
+					log.Printf("[KeepAlive] 🔴 BLOCKED: %s - %v", acc.Phone, err)
+					// Send Telegram alert for blocked account
+					go telegram.AlertBlocked(acc.Phone, m.WorkerID, err.Error())
 				} else {
 					health.Status = StatusSuspicious
 					log.Printf("[KeepAlive] ⚠️ Failed: %s - %v", acc.Phone, err)
@@ -356,7 +362,7 @@ func (m *ClientManager) sendKeepAliveMessages() {
 				health.TempBlockedAt = time.Time{} // Clear any temp block
 				stats.MessagesSent++
 				stats.LastActionTime = time.Now()
-				log.Printf("[KeepAlive] ✅ Message sent: %s -> %s (stage: %s, msgs: %d/%d)", 
+				log.Printf("[KeepAlive] ✅ Message sent: %s -> %s (stage: %s, msgs: %d/%d)",
 					acc.Phone, targetPhone, stage, stats.MessagesSent, config.MessagesPerDay)
 			}
 		}
@@ -374,7 +380,7 @@ func (m *ClientManager) performKeepAliveTouch(acc *AccountClient) {
 	}
 
 	ctx := context.Background()
-	
+
 	// Random touch activity
 	activities := []string{"presence", "typing", "read"}
 	activity := activities[rand.Intn(len(activities))]
@@ -385,7 +391,7 @@ func (m *ClientManager) performKeepAliveTouch(acc *AccountClient) {
 		_ = acc.Client.SendPresence(ctx, types.PresenceAvailable)
 		time.Sleep(time.Duration(2+rand.Intn(3)) * time.Second)
 		_ = acc.Client.SendPresence(ctx, types.PresenceUnavailable)
-		
+
 	case "typing":
 		// Start typing in a random chat then stop
 		if len(keepAliveTargetPhones) > 0 {
@@ -395,7 +401,7 @@ func (m *ClientManager) performKeepAliveTouch(acc *AccountClient) {
 			time.Sleep(time.Duration(1+rand.Intn(2)) * time.Second)
 			_ = acc.Client.SendChatPresence(ctx, jid, types.ChatPresencePaused, types.ChatPresenceMediaText)
 		}
-		
+
 	case "read":
 		// Get contacts and mark something as read
 		contacts, err := acc.Client.Store.Contacts.GetAllContacts(ctx)
@@ -412,21 +418,21 @@ func (m *ClientManager) getOrCreateDailyStats(phone, date string) *DailyKeepAliv
 	if stats, exists := keepAliveDailyActions[key]; exists {
 		return stats
 	}
-	
+
 	stats := &DailyKeepAliveStats{
 		Date:         date,
 		MessagesSent: 0,
 		TouchesDone:  0,
 	}
 	keepAliveDailyActions[key] = stats
-	
+
 	// Clean old entries (keep only today)
 	for k := range keepAliveDailyActions {
 		if !strings.HasSuffix(k, "_"+date) {
 			delete(keepAliveDailyActions, k)
 		}
 	}
-	
+
 	return stats
 }
 
@@ -435,9 +441,9 @@ func (m *ClientManager) getAccountStage(acc *AccountClient) string {
 	if acc.CreatedAt.IsZero() {
 		return "adult" // Unknown = treat as adult
 	}
-	
+
 	days := int(time.Since(acc.CreatedAt).Hours() / 24)
-	
+
 	switch {
 	case days <= 3:
 		return "newborn"
@@ -480,7 +486,7 @@ func (m *ClientManager) checkAllAccountsHealth() {
 		if !acc.Connected {
 			health.Status = StatusDisconnected
 			log.Printf("[HealthCheck] 🟡 %s: DISCONNECTED", phone)
-			
+
 			// Attempt reconnect
 			go m.attemptReconnect(phone)
 			continue
@@ -540,7 +546,7 @@ func (m *ClientManager) attemptReconnect(phone string) {
 		} else {
 			// Wait for connection
 			time.Sleep(3 * time.Second)
-			
+
 			if acc.Client.IsLoggedIn() {
 				log.Printf("[Reconnect] ✅ Successfully reconnected %s", phone)
 				acc.Connected = true
@@ -611,7 +617,7 @@ func isTempBlockedError(err error) bool {
 	}
 	errStr := strings.ToLower(err.Error())
 	tempBlockIndicators := []string{
-		"restricted",      // "Your account is restricted"
+		"restricted", // "Your account is restricted"
 		"temporarily",
 		"try again later",
 		"wait",
@@ -651,39 +657,39 @@ func (m *ClientManager) checkTempBlockedAccounts() {
 			restrictedCount++
 		}
 	}
-	
+
 	if restrictedCount == 0 {
 		return // No restricted accounts
 	}
-	
+
 	log.Printf("[Restricted] 🔍 Checking %d restricted accounts...", restrictedCount)
-	
+
 	for phone, health := range accountHealthMap {
 		if health.Status != StatusTempBlocked {
 			continue
 		}
-		
+
 		// Calculate remaining time
 		elapsed := time.Since(health.TempBlockedAt)
 		remaining := health.TempBlockDuration - elapsed
-		
+
 		if remaining > 0 {
-			log.Printf("[Restricted] ⏳ Account %s: %v remaining (restricted at %s)", 
+			log.Printf("[Restricted] ⏳ Account %s: %v remaining (restricted at %s)",
 				phone, remaining.Round(time.Minute), health.TempBlockedAt.Format("15:04"))
 			continue
 		}
-		
+
 		log.Printf("[Restricted] 🔄 Restriction should be lifted for %s, testing...", phone)
-		
+
 		// Try to reconnect and send a test presence
 		m.mu.RLock()
 		acc, exists := m.accounts[phone]
 		m.mu.RUnlock()
-		
+
 		if !exists || acc == nil || acc.Client == nil {
 			continue
 		}
-		
+
 		// Try to send presence (lightweight check)
 		ctx := context.Background()
 		err := acc.Client.SendPresence(ctx, types.PresenceAvailable)
@@ -703,13 +709,13 @@ func (m *ClientManager) checkTempBlockedAccounts() {
 			health.LastError = ""
 			health.ConsecutiveFailures = 0
 			log.Printf("[Restricted] ✅ Account %s restriction lifted! Back to normal.", phone)
-			
+
 			// Send offline presence
 			_ = acc.Client.SendPresence(ctx, types.PresenceUnavailable)
 		}
-		
+
 		health.LastBlockCheck = time.Now()
-		
+
 		// Small delay between checks
 		time.Sleep(5 * time.Second)
 	}
@@ -720,7 +726,7 @@ func (m *ClientManager) checkTempBlockedAccounts() {
 func (m *ClientManager) getRandomInternalAccountForKeepAlive(excludePhone string) string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	var candidates []string
 	for phone, acc := range m.accounts {
 		if phone == excludePhone {
@@ -737,11 +743,11 @@ func (m *ClientManager) getRandomInternalAccountForKeepAlive(excludePhone string
 		}
 		candidates = append(candidates, phone)
 	}
-	
+
 	if len(candidates) == 0 {
 		return ""
 	}
-	
+
 	return candidates[rand.Intn(len(candidates))]
 }
 
@@ -752,26 +758,26 @@ func (m *ClientManager) SendTouchToBlockedAccount(phone string) {
 	m.mu.RLock()
 	acc, exists := m.accounts[phone]
 	m.mu.RUnlock()
-	
+
 	if !exists || acc == nil || acc.Client == nil {
 		return
 	}
-	
+
 	health := m.getOrCreateHealth(phone)
 	remaining := health.TempBlockDuration - time.Since(health.TempBlockedAt)
-	
+
 	// Just try to connect/send presence - keeps the connection alive
 	if !acc.Connected {
 		_ = acc.Client.Connect()
 		time.Sleep(2 * time.Second)
 	}
-	
+
 	// Try presence - this should work even when restricted
 	ctx := context.Background()
 	_ = acc.Client.SendPresence(ctx, types.PresenceAvailable)
 	time.Sleep(1 * time.Second)
 	_ = acc.Client.SendPresence(ctx, types.PresenceUnavailable)
-	
+
 	if remaining > 0 {
 		log.Printf("[Restricted] 👆 Touch sent to %s (%v remaining)", phone, remaining.Round(time.Minute))
 	} else {
@@ -790,21 +796,21 @@ func (m *ClientManager) TriggerReconnect(phone string) error {
 	}
 
 	log.Printf("[Reconnect] Manual reconnect triggered for %s", phone)
-	
+
 	if acc.Client != nil {
 		// Disconnect first
 		acc.Client.Disconnect()
 		time.Sleep(2 * time.Second)
-		
+
 		// Reconnect
 		err := acc.Client.Connect()
 		if err != nil {
 			return err
 		}
-		
+
 		// Wait and check
 		time.Sleep(3 * time.Second)
-		
+
 		if acc.Client.IsLoggedIn() {
 			acc.Connected = true
 			acc.LoggedIn = true
@@ -814,7 +820,6 @@ func (m *ClientManager) TriggerReconnect(phone string) error {
 			log.Printf("[Reconnect] ✅ Manual reconnect successful for %s", phone)
 		}
 	}
-	
+
 	return nil
 }
-

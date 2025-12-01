@@ -28,6 +28,7 @@ import (
 
 	"github.com/whatsapp-automation/worker/internal/config"
 	"github.com/whatsapp-automation/worker/internal/fingerprint"
+	"github.com/whatsapp-automation/worker/internal/telegram"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -82,8 +83,9 @@ type AccountClient struct {
 	CreatedAt      time.Time // When account was first connected
 	LastWarmupSent time.Time // Last warmup message time
 	WarmupComplete bool      // True after 3 days of warmup
-	WarmupStage    string    // Current stage: new_born, baby, toddler, teen, adult, veteran
-	IsInWarmup     bool      // TRUE = new account with daily limits, FALSE = veteran no limits
+	WarmupStage    string    // Current stage: new_born, baby, teen, adult
+	IsInWarmup     bool      // TRUE = new account with daily limits, FALSE = no limits
+	IsNew          bool      // TRUE = marked as new device (3 day warmup), FALSE = ready immediately
 
 	// Message tracking for pauses and limits
 	SessionMsgCount int       // Messages sent in current session (reset on pause)
@@ -703,8 +705,11 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 
 	case *events.Disconnected:
 		// Only log if state actually changed
-		if acc.lastConnectedState {
+		wasConnected := acc.lastConnectedState
+		if wasConnected {
 			log.Printf("[%s] ❌ Disconnected from WhatsApp", phone)
+			// Send Telegram alert
+			go telegram.AlertDisconnected(phone, m.WorkerID, "Connection lost")
 		}
 		acc.Connected = false
 		acc.lastConnectedState = false
@@ -739,7 +744,7 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 		// Attempt reconnect with random delay (only if was logged in)
 		// Unstable accounts get longer delays to reduce server load
 		if acc.LoggedIn {
-			go func(p string, unstable bool, disconnects int) {
+			go func(p string, unstable bool, disconnects int, workerID string) {
 				var delay time.Duration
 				if unstable {
 					// Unstable accounts: wait longer (1-3 minutes)
@@ -751,8 +756,13 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 					log.Printf("[%s] Will attempt reconnect in %v", p, delay)
 				}
 				time.Sleep(delay)
-				m.attemptSmartReconnect(p)
-			}(phone, acc.IsUnstable, acc.DisconnectCount)
+				
+				// Try reconnect
+				err := m.attemptSmartReconnect(p)
+				if err == nil {
+					telegram.AlertReconnected(p, workerID)
+				}
+			}(phone, acc.IsUnstable, acc.DisconnectCount, m.WorkerID)
 		}
 
 	case *events.KeepAliveTimeout:
@@ -1170,14 +1180,17 @@ func (m *ClientManager) resetCountersIfNeeded(acc *AccountClient) {
 }
 
 // getStageLimits returns the sending limits based on warmup stage
+// v6.0 simplified stages:
+// new_born (1-3 days): 5/day - WARMUP ONLY
+// baby (4-7 days): 20/day - can send campaigns
+// teen (8-14 days): 50/day - can send campaigns
+// adult (15+ days): 100/day - can send campaigns
 func getStageLimits(stage string) StageLimits {
 	limits := map[string]StageLimits{
-		"new_born": {MaxDay: 5, MaxHour: 2},
-		"baby":     {MaxDay: 15, MaxHour: 5},
-		"toddler":  {MaxDay: 30, MaxHour: 10},
-		"teen":     {MaxDay: 50, MaxHour: 15},
-		"adult":    {MaxDay: 100, MaxHour: 25},
-		"veteran":  {MaxDay: 200, MaxHour: 50},
+		"new_born": {MaxDay: 5, MaxHour: 5},    // Warmup only!
+		"baby":     {MaxDay: 20, MaxHour: 20},  // Can send campaigns
+		"teen":     {MaxDay: 50, MaxHour: 50},  // Can send campaigns
+		"adult":    {MaxDay: 100, MaxHour: 100}, // Full capacity
 	}
 
 	if l, ok := limits[stage]; ok {

@@ -82,7 +82,7 @@ func (s *Server) StartBackgroundServices(ctx context.Context) {
 	// Setup message handlers for receiving messages
 	s.client.SetupAllMessageHandlers()
 	log.Printf("[STARTUP] Message receivers setup complete")
-	
+
 	// NOTE: The following are DISABLED per v5.0 spec:
 	// - Keep Alive messages every hour (NOT needed)
 	// - Human Activity Simulator (NOT needed)

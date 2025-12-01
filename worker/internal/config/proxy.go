@@ -119,8 +119,9 @@ func LoadProxyPool() *ProxyPool {
 	return pool
 }
 
-// GetProxyForMessage returns the best available proxy for sending a message
-// Rotates proxy every 10-20 messages and respects 24h cooldown
+// GetProxyForMessage returns the current sticky proxy for sending a message
+// v6.0: Sticky proxy - each device keeps the same IP (no rotation!)
+// Only switches if proxy is blocked/down
 func (p *ProxyPool) GetProxyForMessage() *ProxyConfig {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -129,79 +130,40 @@ func (p *ProxyPool) GetProxyForMessage() *ProxyConfig {
 		return &ProxyConfig{Enabled: false}
 	}
 
-	if len(p.proxies) == 1 {
-		p.usage[0].MessageCount++
-		p.usage[0].LastUsed = time.Now()
-		return p.proxies[0]
+	// v6.0: Sticky proxy - use current index, don't rotate
+	if p.currentIndex < 0 || p.currentIndex >= len(p.proxies) {
+		p.currentIndex = 0
 	}
 
-	now := time.Now()
-	cooldownDuration := time.Duration(p.cooldownHours) * time.Hour
-
-	// Find best available proxy
-	bestIdx := -1
-	bestScore := -1
-
-	for i := range p.proxies {
-		usage := p.usage[i]
-		
-		// Skip blocked proxies
-		if usage.Blocked {
-			continue
-		}
-
-		// Check if in cooldown (used recently and hit rotation limit)
-		if usage.MessageCount >= p.rotateAfter {
-			timeSinceUse := now.Sub(usage.LastUsed)
-			if timeSinceUse < cooldownDuration {
-				// Still in cooldown
-				continue
-			}
-			// Cooldown passed, reset count
-			usage.MessageCount = 0
-		}
-
-		// Score: prefer proxies with fewer messages sent
-		score := p.rotateAfter - usage.MessageCount
-		if score > bestScore {
-			bestScore = score
-			bestIdx = i
-		}
-	}
-
-	// If no proxy available, reset the oldest one
-	if bestIdx == -1 {
-		oldestIdx := 0
-		oldestTime := now
-		for i, usage := range p.usage {
-			if !usage.Blocked && usage.LastUsed.Before(oldestTime) {
-				oldestTime = usage.LastUsed
-				oldestIdx = i
+	// Check if current proxy is blocked
+	if p.usage[p.currentIndex].Blocked {
+		// Find first non-blocked proxy
+		found := false
+		for i := range p.proxies {
+			if !p.usage[i].Blocked {
+				p.currentIndex = i
+				found = true
+				log.Printf("[ProxyPool] Switched to proxy %d (previous was blocked)", i)
+				break
 			}
 		}
-		bestIdx = oldestIdx
-		p.usage[bestIdx].MessageCount = 0
-		log.Printf("[ProxyPool] All proxies in cooldown, reset proxy %d", bestIdx)
+		if !found {
+			log.Printf("[ProxyPool] ⚠️ All proxies blocked!")
+			return &ProxyConfig{Enabled: false}
+		}
 	}
 
-	// Use this proxy
-	p.usage[bestIdx].MessageCount++
-	p.usage[bestIdx].LastUsed = now
-	p.currentIndex = bestIdx
+	// Update usage stats
+	p.usage[p.currentIndex].MessageCount++
+	p.usage[p.currentIndex].LastUsed = time.Now()
 
-	log.Printf("[ProxyPool] Using proxy %d/%d (msg %d/%d): %s",
-		bestIdx+1, len(p.proxies), 
-		p.usage[bestIdx].MessageCount, p.rotateAfter,
-		p.proxies[bestIdx].String())
-
-	// Check if we should rotate after this message
-	if p.usage[bestIdx].MessageCount >= p.rotateAfter {
-		// Set new random rotation point for next proxy
-		p.rotateAfter = 10 + rand.Intn(11) // 10-20
-		log.Printf("[ProxyPool] Proxy %d reached limit, will rotate (next limit: %d)", bestIdx, p.rotateAfter)
+	// Log only occasionally (every 100 messages)
+	if p.usage[p.currentIndex].MessageCount%100 == 0 {
+		log.Printf("[ProxyPool] Sticky proxy %d: %d messages sent",
+			p.currentIndex+1, p.usage[p.currentIndex].MessageCount)
 	}
 
-	return p.proxies[bestIdx]
+	return p.proxies[p.currentIndex]
 }
 
 // ShouldRotate returns true if current proxy should be rotated
