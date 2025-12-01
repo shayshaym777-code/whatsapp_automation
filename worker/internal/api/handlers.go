@@ -146,6 +146,9 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 
 	// Capacity endpoints
 	r.HandleFunc("/capacity", s.handleCapacity).Methods(http.MethodGet)
+
+	// Connection status endpoint
+	r.HandleFunc("/connections", s.handleConnections).Methods(http.MethodGet)
 }
 
 // writeJSON writes a JSON response
@@ -782,5 +785,34 @@ func (s *Server) handleCapacity(w http.ResponseWriter, r *http.Request) {
 		"available_accounts": availableAccounts,
 		"total_capacity":     totalCapacity,
 		"accounts":           accounts,
+	})
+}
+
+// GET /connections - Get detailed connection status for all accounts
+func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
+	connections := s.client.GetConnectionStatus()
+
+	connected := 0
+	disconnected := 0
+	reconnecting := 0
+
+	for _, conn := range connections {
+		if conn["connected"].(bool) {
+			connected++
+		} else if conn["reconnecting"].(bool) {
+			reconnecting++
+		} else {
+			disconnected++
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":      true,
+		"worker_id":    s.WorkerID,
+		"total":        len(connections),
+		"connected":    connected,
+		"disconnected": disconnected,
+		"reconnecting": reconnecting,
+		"accounts":     connections,
 	})
 }

@@ -704,10 +704,13 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 			health.Status = StatusDisconnected
 		}
 
-		// Attempt reconnect after 5 seconds (only if was logged in)
+		// Attempt reconnect with random delay (only if was logged in)
+		// Random delay prevents all accounts from reconnecting at once
 		if acc.LoggedIn {
 			go func(p string) {
-				time.Sleep(5 * time.Second)
+				delay := time.Duration(rand.Intn(20)+5) * time.Second // 5-25 seconds
+				log.Printf("[%s] Will attempt reconnect in %v", p, delay)
+				time.Sleep(delay)
 				m.attemptSmartReconnect(p)
 			}(phone)
 		}
@@ -721,15 +724,19 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 		// Update health
 		if health := m.GetAccountHealth(phone); health != nil {
 			health.ConsecutiveFailures = int(v.ErrorCount)
-			if v.ErrorCount > 5 {
+			if v.ErrorCount > 3 {
 				health.Status = StatusSuspicious
 			}
 		}
 
-		// Force reconnect if too many failures
-		if v.ErrorCount > 5 {
-			log.Printf("[%s] 🔄 Too many keepalive failures, forcing reconnect", phone)
+		// Force reconnect if too many failures (reduced from 5 to 3)
+		if v.ErrorCount > 3 {
+			log.Printf("[%s] 🔄 KeepAlive failed %d times, forcing reconnect", phone, v.ErrorCount)
 			go func(p string) {
+				// Random delay to avoid all accounts reconnecting at once
+				delay := time.Duration(rand.Intn(10)+5) * time.Second
+				time.Sleep(delay)
+				
 				m.mu.RLock()
 				a, ok := m.accounts[p]
 				m.mu.RUnlock()
@@ -1784,6 +1791,54 @@ func (m *ClientManager) GetAccountStats() []map[string]interface{} {
 			"warmup_complete": acc.WarmupComplete,
 			"session_msgs":    acc.SessionMsgCount,
 			"today_msgs":      acc.TotalMsgToday,
+		})
+		acc.mu.RUnlock()
+	}
+	return result
+}
+
+// GetConnectionStatus returns detailed connection status for all accounts
+func (m *ClientManager) GetConnectionStatus() []map[string]interface{} {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make([]map[string]interface{}, 0, len(m.accounts))
+	for phone, acc := range m.accounts {
+		acc.mu.RLock()
+		
+		// Check actual connection status from whatsmeow client
+		wsConnected := false
+		wsLoggedIn := false
+		if acc.Client != nil {
+			wsConnected = acc.Client.IsConnected()
+			wsLoggedIn = acc.Client.IsLoggedIn()
+		}
+
+		status := "unknown"
+		reconnecting := false
+		
+		if wsConnected && wsLoggedIn {
+			status = "connected"
+		} else if acc.LoggedIn && !wsConnected {
+			status = "disconnected"
+			reconnecting = true // Monitor will try to reconnect
+		} else if !acc.LoggedIn {
+			status = "not_logged_in"
+		} else {
+			status = "connecting"
+			reconnecting = true
+		}
+
+		result = append(result, map[string]interface{}{
+			"phone":              phone,
+			"status":             status,
+			"connected":          wsConnected,
+			"logged_in":          wsLoggedIn,
+			"reconnecting":       reconnecting,
+			"last_error":         acc.LastError,
+			"consecutive_fails":  acc.ConsecutiveFailures,
+			"banned_until":       acc.BannedUntil.Format(time.RFC3339),
+			"is_banned":          time.Now().Before(acc.BannedUntil),
 		})
 		acc.mu.RUnlock()
 	}

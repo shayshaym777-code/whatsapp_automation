@@ -159,7 +159,7 @@ func (m *ConnectionMonitor) checkAndReconnect() {
 			// === DELETE ACCOUNT AFTER 48 HOURS ===
 			log.Printf("[MONITOR] 💀 Account %s revival period expired (%.1f hours) - DELETING",
 				phone, timeSinceDisconnect.Hours())
-			
+
 			go m.deleteExpiredAccount(phone, acc)
 			continue
 		}
@@ -393,7 +393,7 @@ func (m *ConnectionMonitor) sendFirstAidMessage(phone string, acc *AccountClient
 
 	if acc.Client.IsConnected() && acc.Client.IsLoggedIn() {
 		log.Printf("[MONITOR] ✅ First aid SUCCESS for %s - account revived!", phone)
-		
+
 		// Clear from disconnected tracking
 		m.mu.Lock()
 		delete(m.disconnectedSince, phone)
@@ -439,7 +439,7 @@ func (m *ConnectionMonitor) deleteExpiredAccount(phone string, acc *AccountClien
 // deleteSessionFiles removes session files for an account
 func (m *ConnectionMonitor) deleteSessionFiles(phone string) {
 	sessionsDir := "/data/sessions"
-	
+
 	// Delete .db file
 	dbFile := filepath.Join(sessionsDir, phone+".db")
 	if err := os.Remove(dbFile); err != nil && !os.IsNotExist(err) {
