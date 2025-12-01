@@ -5,7 +5,8 @@ const { query } = require('../../config/database');
 const router = Router();
 
 // v8.0: Simple and clean - no warmup, no stages, no power scores
-// Contacts are distributed EVENLY among all connected accounts
+// Contacts are distributed EVENLY among ALL connected accounts
+// Any phone can send to any country - no restrictions!
 
 // Telegram config
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8357127187:AAGdBAIC-4Kmu1JA5KmaPxJKhQc-htlvF9w';
@@ -13,9 +14,9 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '8014432452';
 
 // Worker URLs
 const WORKERS = [
-    { id: 'worker-1', url: process.env.WORKER_1_URL || 'http://worker-1:3001', country: 'US' },
-    { id: 'worker-2', url: process.env.WORKER_2_URL || 'http://worker-2:3001', country: 'IL' },
-    { id: 'worker-3', url: process.env.WORKER_3_URL || 'http://worker-3:3001', country: 'GB' },
+    { id: 'worker-1', url: process.env.WORKER_1_URL || 'http://worker-1:3001' },
+    { id: 'worker-2', url: process.env.WORKER_2_URL || 'http://worker-2:3001' },
+    { id: 'worker-3', url: process.env.WORKER_3_URL || 'http://worker-3:3001' },
 ];
 
 // Send Telegram alert
@@ -31,41 +32,40 @@ async function sendTelegramAlert(message) {
     }
 }
 
-// Get healthy accounts (at least 1 session connected, not blocked)
-async function getHealthyAccounts() {
-    try {
-        // v8.0: Use the get_healthy_accounts function or query directly
-        const result = await query(`
-            SELECT 
-                a.phone, 
-                a.country, 
-                a.proxy_id,
-                COUNT(s.id) FILTER (WHERE s.status = 'CONNECTED') as sessions
-            FROM accounts a
-            LEFT JOIN sessions s ON a.phone = s.phone
-            WHERE a.blocked_at IS NULL OR a.blocked_at < NOW() - INTERVAL '48 hours'
-            GROUP BY a.phone, a.country, a.proxy_id
-            HAVING COUNT(s.id) FILTER (WHERE s.status = 'CONNECTED') > 0
-        `);
-        return result.rows;
-    } catch (err) {
-        console.error('[Send] DB error:', err);
-        return [];
-    }
-}
-
-// Get worker for a phone based on country
-function getWorkerForPhone(phone, country) {
-    // Match worker by country
-    const worker = WORKERS.find(w => w.country === country);
-    if (worker) return worker;
+// v8.0: Get ALL healthy accounts from ALL workers
+// No country filtering - any phone can send to any destination
+async function getHealthyAccountsFromWorkers() {
+    const allAccounts = [];
     
-    // Default to first worker
-    return WORKERS[0];
+    for (const worker of WORKERS) {
+        try {
+            const response = await axios.get(`${worker.url}/accounts`, { timeout: 5000 });
+            const accounts = response.data.accounts || [];
+            
+            // Filter only connected & logged in accounts
+            const healthyAccounts = accounts.filter(a => a.connected && a.logged_in);
+            
+            // Add worker info to each account
+            healthyAccounts.forEach(acc => {
+                allAccounts.push({
+                    phone: acc.phone,
+                    worker_id: worker.id,
+                    worker_url: worker.url
+                });
+            });
+            
+            console.log(`[Send] Worker ${worker.id}: ${healthyAccounts.length} healthy accounts`);
+        } catch (err) {
+            console.error(`[Send] Failed to get accounts from ${worker.id}:`, err.message);
+        }
+    }
+    
+    return allAccounts;
 }
 
 // POST /api/send - Main send endpoint
-// Distributes contacts EVENLY among all healthy accounts
+// Distributes contacts EVENLY among ALL healthy accounts
+// No country restrictions - any phone sends to any destination
 router.post('/', async (req, res, next) => {
     try {
         const { contacts, message } = req.body;
@@ -77,8 +77,8 @@ router.post('/', async (req, res, next) => {
             return res.status(400).json({ error: 'message required' });
         }
 
-        // 1. Get healthy accounts (at least 1 session connected)
-        const accounts = await getHealthyAccounts();
+        // 1. Get ALL healthy accounts from ALL workers
+        const accounts = await getHealthyAccountsFromWorkers();
 
         if (accounts.length === 0) {
             await sendTelegramAlert('⚠️ <b>אין מכשירים!</b>\n\nNo healthy accounts available.');
@@ -89,16 +89,22 @@ router.post('/', async (req, res, next) => {
             await sendTelegramAlert(`⚠️ <b>מעט מכשירים</b>\n\nOnly ${accounts.length} account(s) available.`);
         }
 
-        // 2. Create campaign
-        const campaignResult = await query(`
-            INSERT INTO campaigns (total, message_template, status, started_at)
-            VALUES ($1, $2, 'in_progress', NOW())
-            RETURNING id
-        `, [contacts.length, message]);
+        // 2. Create campaign in database
+        let campaignId;
+        try {
+            const campaignResult = await query(`
+                INSERT INTO campaigns (total, message_template, status, started_at)
+                VALUES ($1, $2, 'in_progress', NOW())
+                RETURNING id
+            `, [contacts.length, message]);
+            campaignId = campaignResult.rows[0].id;
+        } catch (dbErr) {
+            console.error('[Send] DB error creating campaign:', dbErr.message);
+            campaignId = `camp_${Date.now()}`;
+        }
 
-        const campaignId = campaignResult.rows[0].id;
-
-        // 3. Distribute contacts EVENLY among all accounts
+        // 3. Distribute contacts EVENLY among ALL accounts
+        // No country filtering - any phone sends to any destination
         const perAccount = Math.ceil(contacts.length / accounts.length);
         const distribution = {};
         let contactIndex = 0;
@@ -108,7 +114,7 @@ router.post('/', async (req, res, next) => {
             if (count > 0) {
                 distribution[account.phone] = {
                     contacts: contacts.slice(contactIndex, contactIndex + count),
-                    country: account.country
+                    worker_url: account.worker_url
                 };
                 contactIndex += count;
             }
@@ -146,14 +152,12 @@ async function processCampaign(campaignId, distribution, message) {
 
     // Send from all accounts in parallel
     const sendPromises = Object.entries(distribution).map(async ([phone, data]) => {
-        const worker = getWorkerForPhone(phone, data.country);
-
         for (const contact of data.contacts) {
             try {
                 const toPhone = typeof contact === 'object' ? contact.phone : contact;
                 const name = typeof contact === 'object' ? (contact.name || '') : '';
 
-                await axios.post(`${worker.url}/send`, {
+                await axios.post(`${data.worker_url}/send`, {
                     from_phone: phone,
                     to_phone: toPhone,
                     message: message,
@@ -162,39 +166,39 @@ async function processCampaign(campaignId, distribution, message) {
 
                 sent++;
 
-                // Log success
-                await query(`
-                    INSERT INTO send_log (campaign_id, phone, recipient, status)
-                    VALUES ($1, $2, $3, 'SENT')
-                `, [campaignId, phone, toPhone]);
-
-                // Update account message count
-                await query(`
-                    UPDATE accounts SET messages_today = messages_today + 1, last_message_at = NOW()
-                    WHERE phone = $1
-                `, [phone]);
+                // Log success (ignore DB errors)
+                try {
+                    await query(`
+                        INSERT INTO send_log (campaign_id, phone, recipient, status)
+                        VALUES ($1, $2, $3, 'SENT')
+                    `, [campaignId, phone, toPhone]);
+                } catch (e) {}
 
             } catch (err) {
                 failed++;
                 console.error(`[Campaign ${campaignId}] Failed from ${phone}:`, err.message);
 
-                await query(`
-                    INSERT INTO send_log (campaign_id, phone, recipient, status, error)
-                    VALUES ($1, $2, $3, 'FAILED', $4)
-                `, [campaignId, phone, typeof contact === 'object' ? contact.phone : contact, err.message]);
+                try {
+                    await query(`
+                        INSERT INTO send_log (campaign_id, phone, recipient, status, error)
+                        VALUES ($1, $2, $3, 'FAILED', $4)
+                    `, [campaignId, phone, typeof contact === 'object' ? contact.phone : contact, err.message]);
+                } catch (e) {}
             }
         }
     });
 
     await Promise.all(sendPromises);
 
-    // Update campaign
+    // Update campaign (ignore DB errors)
     const duration = Math.round((Date.now() - startTime) / 1000);
-    await query(`
-        UPDATE campaigns 
-        SET status = 'completed', sent = $1, failed = $2, completed_at = NOW()
-        WHERE id = $3
-    `, [sent, failed, campaignId]);
+    try {
+        await query(`
+            UPDATE campaigns 
+            SET status = 'completed', sent = $1, failed = $2, completed_at = NOW()
+            WHERE id = $3
+        `, [sent, failed, campaignId]);
+    } catch (e) {}
 
     // Send completion alert
     const durationStr = duration > 60 ? `${Math.floor(duration / 60)}m ${duration % 60}s` : `${duration}s`;
@@ -203,17 +207,17 @@ async function processCampaign(campaignId, distribution, message) {
     console.log(`[Campaign ${campaignId}] Done: ${sent} sent, ${failed} failed, ${durationStr}`);
 }
 
-// GET /api/send/status - Get send capacity
+// GET /api/send/status - Get send capacity from workers
 router.get('/status', async (req, res, next) => {
     try {
-        const accounts = await getHealthyAccounts();
+        const accounts = await getHealthyAccountsFromWorkers();
         
         res.json({
             healthy_accounts: accounts.length,
+            messages_per_minute: accounts.length * 22, // ~22 msgs/min per device
             accounts: accounts.map(a => ({
                 phone: a.phone,
-                sessions: parseInt(a.sessions) || 0,
-                country: a.country
+                worker: a.worker_id
             }))
         });
     } catch (err) {

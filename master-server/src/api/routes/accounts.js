@@ -4,197 +4,173 @@ const { query } = require('../../config/database');
 
 const router = Router();
 
-// v8.0: Simple status - CONNECTED (🟢) or DISCONNECTED (🔴)
-// At least 1 session connected = CONNECTED
-// Blocked in last 48h = BLOCKED
+// v8.0: Get accounts from WORKERS directly
+// Status: CONNECTED (at least 1 session) or DISCONNECTED
 
 // Worker URLs
 const WORKERS = [
-    { id: 'worker-1', url: process.env.WORKER_1_URL || 'http://worker-1:3001', country: 'US' },
-    { id: 'worker-2', url: process.env.WORKER_2_URL || 'http://worker-2:3001', country: 'IL' },
-    { id: 'worker-3', url: process.env.WORKER_3_URL || 'http://worker-3:3001', country: 'GB' },
+    { id: 'worker-1', url: process.env.WORKER_1_URL || 'http://worker-1:3001' },
+    { id: 'worker-2', url: process.env.WORKER_2_URL || 'http://worker-2:3001' },
+    { id: 'worker-3', url: process.env.WORKER_3_URL || 'http://worker-3:3001' },
 ];
 
-// Helper: Get account status based on sessions and blocked_at
-function getAccountStatus(connectedSessions, blockedAt) {
-    // If blocked in last 48 hours
-    if (blockedAt) {
-        const blockedTime = new Date(blockedAt);
-        const hoursSinceBlocked = (Date.now() - blockedTime.getTime()) / (1000 * 60 * 60);
-        if (hoursSinceBlocked < 48) {
-            return 'BLOCKED';
-        }
-    }
-    // At least 1 session connected = CONNECTED
-    return connectedSessions > 0 ? 'CONNECTED' : 'DISCONNECTED';
-}
-
-// GET /api/accounts - List all accounts with session count
+// GET /api/accounts - Get all accounts from ALL workers
 router.get('/', async (req, res, next) => {
     try {
-        const result = await query(`
-            SELECT 
-                a.phone, 
-                a.country, 
-                a.proxy_id, 
-                a.messages_today,
-                a.blocked_at,
-                (SELECT COUNT(*) FROM sessions s WHERE s.phone = a.phone) as total_sessions,
-                (SELECT COUNT(*) FROM sessions s WHERE s.phone = a.phone AND s.status = 'CONNECTED') as connected_sessions
-            FROM accounts a
-            ORDER BY a.created_at DESC
-        `);
-
-        const accounts = result.rows.map(a => {
-            const connected = parseInt(a.connected_sessions) || 0;
-            const total = parseInt(a.total_sessions) || 0;
-            const status = getAccountStatus(connected, a.blocked_at);
-            
-            return {
-                phone: a.phone,
-                status: status,  // 🟢 CONNECTED, 🔴 DISCONNECTED, or BLOCKED
-                sessions: `${connected}/${total}`,    // "3/4"
-                connected_sessions: connected,
-                total_sessions: total,
-                country: a.country,
-                messages_today: a.messages_today || 0
-            };
-        });
-
-        const connectedCount = accounts.filter(a => a.status === 'CONNECTED').length;
-        const blockedCount = accounts.filter(a => a.status === 'BLOCKED').length;
-
-        res.json({
-            accounts,
-            total_connected: connectedCount,
-            total_blocked: blockedCount,
-            total_accounts: accounts.length
-        });
-    } catch (err) {
-        next(err);
-    }
-});
-
-// GET /api/accounts/:phone - Get single account
-router.get('/:phone', async (req, res, next) => {
-    try {
-        const result = await query(`
-            SELECT a.*, 
-                   (SELECT COUNT(*) FROM sessions s WHERE s.phone = a.phone) as total_sessions,
-                   (SELECT COUNT(*) FROM sessions s WHERE s.phone = a.phone AND s.status = 'CONNECTED') as connected_sessions
-            FROM accounts a
-            WHERE a.phone = $1
-        `, [req.params.phone]);
-
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Account not found' });
+        const allAccounts = [];
+        
+        for (const worker of WORKERS) {
+            try {
+                const response = await axios.get(`${worker.url}/accounts`, { timeout: 5000 });
+                const accounts = response.data.accounts || [];
+                
+                accounts.forEach(acc => {
+                    // Determine status: CONNECTED if logged_in and connected
+                    const status = (acc.connected && acc.logged_in) ? 'CONNECTED' : 'DISCONNECTED';
+                    
+                    allAccounts.push({
+                        phone: acc.phone,
+                        status: status,
+                        connected: acc.connected || false,
+                        logged_in: acc.logged_in || false,
+                        sessions: acc.sessions || '1/4',
+                        connected_sessions: acc.connected ? 1 : 0,
+                        total_sessions: 4,
+                        messages_today: acc.messages_today || 0,
+                        worker_id: worker.id
+                    });
+                });
+                
+            } catch (err) {
+                console.error(`[Accounts] Failed to get from ${worker.id}:`, err.message);
+            }
         }
 
-        const a = result.rows[0];
-        const connected = parseInt(a.connected_sessions) || 0;
-        const total = parseInt(a.total_sessions) || 0;
+        const connectedCount = allAccounts.filter(a => a.status === 'CONNECTED').length;
+        const disconnectedCount = allAccounts.filter(a => a.status === 'DISCONNECTED').length;
 
         res.json({
-            ...a,
-            status: getAccountStatus(connected, a.blocked_at),
-            sessions: `${connected}/${total}`,
-            connected_sessions: connected,
-            total_sessions: total
+            accounts: allAccounts,
+            total_connected: connectedCount,
+            total_disconnected: disconnectedCount,
+            total_accounts: allAccounts.length
         });
     } catch (err) {
         next(err);
     }
 });
 
-// POST /api/accounts - Create account
-router.post('/', async (req, res, next) => {
+// GET /api/accounts/:phone - Get single account from workers
+router.get('/:phone', async (req, res, next) => {
     try {
-        const { phone, country, proxy_id } = req.body;
+        const phone = req.params.phone;
+        
+        for (const worker of WORKERS) {
+            try {
+                const response = await axios.get(`${worker.url}/accounts/${phone}`, { timeout: 5000 });
+                if (response.data) {
+                    const acc = response.data;
+                    return res.json({
+                        phone: acc.phone,
+                        status: (acc.connected && acc.logged_in) ? 'CONNECTED' : 'DISCONNECTED',
+                        connected: acc.connected || false,
+                        logged_in: acc.logged_in || false,
+                        sessions: acc.sessions || '1/4',
+                        messages_today: acc.messages_today || 0,
+                        worker_id: worker.id
+                    });
+                }
+            } catch (err) {
+                // Try next worker
+            }
+        }
+        
+        res.status(404).json({ error: 'Account not found' });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// POST /api/accounts/pair - Request pairing code from worker
+router.post('/pair', async (req, res, next) => {
+    try {
+        const { phone, worker_id } = req.body;
 
         if (!phone) {
             return res.status(400).json({ error: 'phone required' });
         }
 
-        const result = await query(`
-            INSERT INTO accounts (phone, country, proxy_id)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (phone) DO UPDATE SET
-                country = COALESCE($2, accounts.country),
-                proxy_id = COALESCE($3, accounts.proxy_id)
-            RETURNING *
-        `, [phone, country || 'US', proxy_id]);
+        // Find worker
+        const workerId = worker_id || 'worker-1';
+        const worker = WORKERS.find(w => w.id === workerId) || WORKERS[0];
 
-        res.status(201).json(result.rows[0]);
+        // Request pairing from worker
+        const response = await axios.post(`${worker.url}/accounts/pair`, {
+            phone: phone
+        }, { timeout: 30000 });
+
+        res.json(response.data);
     } catch (err) {
-        next(err);
+        console.error('[Accounts] Pair error:', err.message);
+        res.status(500).json({ error: err.response?.data?.error || err.message });
     }
 });
 
-// PUT /api/accounts/:phone/block - Mark as blocked (don't use for 48h)
-router.put('/:phone/block', async (req, res, next) => {
+// POST /api/accounts/:phone/disconnect - Disconnect account
+router.post('/:phone/disconnect', async (req, res, next) => {
     try {
-        const result = await query(`
-            UPDATE accounts 
-            SET blocked_at = NOW()
-            WHERE phone = $1
-            RETURNING *
-        `, [req.params.phone]);
-
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Account not found' });
+        const phone = req.params.phone;
+        
+        // Try to disconnect from all workers
+        for (const worker of WORKERS) {
+            try {
+                await axios.post(`${worker.url}/accounts/${phone}/disconnect`, {}, { timeout: 5000 });
+            } catch (err) {
+                // Ignore errors, try all workers
+            }
         }
-
-        res.json({ success: true, message: 'Account blocked - do not use for 48h' });
+        
+        res.json({ success: true, message: 'Disconnect request sent' });
     } catch (err) {
         next(err);
     }
 });
 
-// PUT /api/accounts/:phone/unblock - Unblock account
-router.put('/:phone/unblock', async (req, res, next) => {
+// POST /api/accounts/:phone/reconnect - Reconnect account
+router.post('/:phone/reconnect', async (req, res, next) => {
     try {
-        const result = await query(`
-            UPDATE accounts 
-            SET blocked_at = NULL
-            WHERE phone = $1
-            RETURNING *
-        `, [req.params.phone]);
-
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Account not found' });
+        const phone = req.params.phone;
+        
+        // Try to reconnect from all workers
+        for (const worker of WORKERS) {
+            try {
+                await axios.post(`${worker.url}/accounts/${phone}/reconnect`, {}, { timeout: 5000 });
+            } catch (err) {
+                // Ignore errors, try all workers
+            }
         }
-
-        res.json({ success: true, message: 'Account unblocked' });
+        
+        res.json({ success: true, message: 'Reconnect request sent' });
     } catch (err) {
         next(err);
     }
 });
 
-// DELETE /api/accounts/:phone
+// DELETE /api/accounts/:phone - Delete account from all workers
 router.delete('/:phone', async (req, res, next) => {
     try {
-        await query('DELETE FROM accounts WHERE phone = $1', [req.params.phone]);
-        res.status(204).send();
-    } catch (err) {
-        next(err);
-    }
-});
-
-// GET /api/accounts/:phone/sessions - Get sessions for account
-router.get('/:phone/sessions', async (req, res, next) => {
-    try {
-        const result = await query(`
-            SELECT * FROM sessions WHERE phone = $1 ORDER BY session_number
-        `, [req.params.phone]);
-
-        const connected = result.rows.filter(s => s.status === 'CONNECTED').length;
-
-        res.json({
-            phone: req.params.phone,
-            total: result.rows.length,
-            connected,
-            sessions: result.rows
-        });
+        const phone = req.params.phone;
+        
+        // Try to delete from all workers
+        for (const worker of WORKERS) {
+            try {
+                await axios.delete(`${worker.url}/accounts/${phone}`, { timeout: 5000 });
+            } catch (err) {
+                // Ignore errors, try all workers
+            }
+        }
+        
+        res.json({ success: true, message: 'Account deleted' });
     } catch (err) {
         next(err);
     }
