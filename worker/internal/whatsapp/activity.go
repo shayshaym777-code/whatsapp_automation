@@ -204,14 +204,34 @@ func (m *ClientManager) StartHumanActivitySimulator(phone string) {
 
 			select {
 			case <-time.After(waitDuration):
-				// Skip activity if account became unstable
+				// Check account status
 				m.mu.RLock()
 				acc, exists := m.accounts[phone]
 				m.mu.RUnlock()
+				
+				// For unstable accounts - do light touches only, don't skip!
 				if exists && acc != nil && acc.IsUnstable {
-					log.Printf("[Activity] ⏸️ Skipping activity for unstable account %s", phone)
+					log.Printf("[Activity] 🐢 Light touch for unstable account %s", phone)
+					// Just send presence - very light activity
+					if acc.Client != nil {
+						_ = acc.Client.SendPresence(types.PresenceAvailable)
+						time.Sleep(2 * time.Second)
+						_ = acc.Client.SendPresence(types.PresenceUnavailable)
+					}
 					continue
 				}
+				
+				// Check if temp blocked - send touch anyway
+				if health := m.GetAccountHealth(phone); health != nil && health.Status == StatusTempBlocked {
+					log.Printf("[Activity] 👆 Touch for temp-blocked account %s", phone)
+					if acc != nil && acc.Client != nil {
+						_ = acc.Client.SendPresence(types.PresenceAvailable)
+						time.Sleep(1 * time.Second)
+						_ = acc.Client.SendPresence(types.PresenceUnavailable)
+					}
+					continue
+				}
+				
 				m.performWeightedActivity(phone)
 			case <-stop:
 				log.Printf("[Activity] 🛑 Stopped activity simulator for %s", phone)

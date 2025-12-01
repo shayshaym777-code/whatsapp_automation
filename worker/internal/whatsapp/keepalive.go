@@ -18,6 +18,12 @@ const (
 
 	// HealthCheckInterval - how often to check account health
 	HealthCheckInterval = 5 * time.Minute
+	
+	// TempBlockCheckInterval - how often to check if temp blocked accounts are available
+	TempBlockCheckInterval = 5 * time.Hour // Check every 5 hours
+	
+	// DefaultTempBlockDuration - default temp block duration (WhatsApp usually blocks for 6 hours)
+	DefaultTempBlockDuration = 6 * time.Hour
 )
 
 // Keep alive config per stage - less messages for new accounts, more touches
@@ -138,18 +144,24 @@ const (
 	StatusDisconnected AccountHealthStatus = "DISCONNECTED"
 	StatusBlocked      AccountHealthStatus = "BLOCKED"
 	StatusSuspicious   AccountHealthStatus = "SUSPICIOUS"
+	StatusTempBlocked  AccountHealthStatus = "TEMP_BLOCKED" // Temporarily blocked (usually 6 hours)
 )
 
 // AccountHealth tracks health info for an account
 type AccountHealth struct {
-	Phone              string
-	Status             AccountHealthStatus
-	LastAlive          time.Time
-	LastMessageSent    time.Time
+	Phone               string
+	Status              AccountHealthStatus
+	LastAlive           time.Time
+	LastMessageSent     time.Time
 	LastMessageReceived time.Time
-	LastError          string
+	LastError           string
 	ConsecutiveFailures int
-	MessagesToday      int
+	MessagesToday       int
+	
+	// Temporary block tracking
+	TempBlockedAt       time.Time // When account was temp blocked
+	TempBlockDuration   time.Duration // How long the block lasts (usually 6 hours)
+	LastBlockCheck      time.Time // Last time we checked if block expired
 }
 
 // keepAliveStop channel to stop keep alive
@@ -167,16 +179,20 @@ func (m *ClientManager) StartKeepAlive() {
 	keepAliveStop = make(chan struct{})
 	stopCh := keepAliveStop
 
-	// Keep alive ticker - every hour
+	// Keep alive ticker - every 30 min
 	keepAliveTicker := time.NewTicker(KeepAliveInterval)
 
 	// Health check ticker - every 5 minutes
 	healthTicker := time.NewTicker(HealthCheckInterval)
+	
+	// Temp block check ticker - every 5 hours
+	tempBlockTicker := time.NewTicker(TempBlockCheckInterval)
 
 	go func(stop <-chan struct{}) {
-		log.Println("[KeepAlive] Started - sending keep alive every hour, health check every 5 min")
+		log.Println("[KeepAlive] Started - keep alive every 30min, health check every 5min, block check every 5h")
 		defer keepAliveTicker.Stop()
 		defer healthTicker.Stop()
+		defer tempBlockTicker.Stop()
 
 		// Run health check immediately
 		m.checkAllAccountsHealth()
@@ -187,6 +203,8 @@ func (m *ClientManager) StartKeepAlive() {
 				m.sendKeepAliveMessages()
 			case <-healthTicker.C:
 				m.checkAllAccountsHealth()
+			case <-tempBlockTicker.C:
+				m.checkTempBlockedAccounts()
 			case <-stop:
 				log.Println("[KeepAlive] Stopped")
 				return
@@ -219,11 +237,16 @@ func (m *ClientManager) sendKeepAliveMessages() {
 	today := time.Now().Format("2006-01-02")
 
 	for _, acc := range activeAccounts {
-		// Skip unstable accounts - they need rest
-		if acc.IsUnstable {
-			log.Printf("[KeepAlive] ⏸️ Skipping unstable account: %s (disconnects: %d)", acc.Phone, acc.DisconnectCount)
+		// Check if account is temp blocked - send touch instead of message
+		health := m.getOrCreateHealth(acc.Phone)
+		if health.Status == StatusTempBlocked {
+			// Send a touch to keep the account "warm" even when blocked
+			m.SendTouchToBlockedAccount(acc.Phone)
 			continue
 		}
+		
+		// For unstable accounts - don't skip, just reduce activity
+		// NEVER disconnect or stop trying!
 		
 		// Get or create daily stats
 		stats := m.getOrCreateDailyStats(acc.Phone, today)
@@ -280,14 +303,19 @@ func (m *ClientManager) sendKeepAliveMessages() {
 			message := keepAliveMessages[rand.Intn(len(keepAliveMessages))]
 			
 			err := m.sendKeepAliveMessage(acc, targetPhone, message)
-			health := m.getOrCreateHealth(acc.Phone)
 			
 			if err != nil {
 				health.ConsecutiveFailures++
 				health.LastError = err.Error()
-				if isBlockedError(err) {
+				
+				// Check if it's a temporary block (usually 6 hours)
+				if isTempBlockedError(err) {
+					m.markAccountTempBlocked(acc.Phone, err)
+					log.Printf("[KeepAlive] ⏸️ TEMP BLOCKED: %s - will retry in 5 hours", acc.Phone)
+				} else if isBlockedError(err) {
+					// Permanent block - but still keep trying!
 					health.Status = StatusBlocked
-					log.Printf("[KeepAlive] 🔴 BLOCKED: %s - %v", acc.Phone, err)
+					log.Printf("[KeepAlive] 🔴 BLOCKED: %s - %v (will keep trying)", acc.Phone, err)
 				} else {
 					health.Status = StatusSuspicious
 					log.Printf("[KeepAlive] ⚠️ Failed: %s - %v", acc.Phone, err)
@@ -297,6 +325,7 @@ func (m *ClientManager) sendKeepAliveMessages() {
 				health.LastAlive = time.Now()
 				health.LastMessageSent = time.Now()
 				health.ConsecutiveFailures = 0
+				health.TempBlockedAt = time.Time{} // Clear any temp block
 				stats.MessagesSent++
 				stats.LastActionTime = time.Now()
 				log.Printf("[KeepAlive] ✅ Message sent: %s -> %s (stage: %s, msgs: %d/%d)", 
@@ -543,6 +572,118 @@ func isBlockedError(err error) bool {
 		}
 	}
 	return false
+}
+
+// isTempBlockedError checks if error indicates temporary block (usually 6 hours)
+func isTempBlockedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := strings.ToLower(err.Error())
+	tempBlockIndicators := []string{
+		"temporarily",
+		"try again later",
+		"wait",
+		"too many",
+		"rate limit",
+	}
+	for _, indicator := range tempBlockIndicators {
+		if strings.Contains(errStr, indicator) {
+			return true
+		}
+	}
+	return false
+}
+
+// markAccountTempBlocked marks an account as temporarily blocked
+func (m *ClientManager) markAccountTempBlocked(phone string, err error) {
+	health := m.getOrCreateHealth(phone)
+	health.Status = StatusTempBlocked
+	health.TempBlockedAt = time.Now()
+	health.TempBlockDuration = DefaultTempBlockDuration
+	health.LastError = err.Error()
+	log.Printf("[TempBlock] ⏸️ Account %s temporarily blocked, will check again in %v", phone, DefaultTempBlockDuration)
+}
+
+// checkTempBlockedAccounts checks if temp blocked accounts are available again
+func (m *ClientManager) checkTempBlockedAccounts() {
+	log.Println("[TempBlock] 🔍 Checking temporarily blocked accounts...")
+	
+	for phone, health := range accountHealthMap {
+		if health.Status != StatusTempBlocked {
+			continue
+		}
+		
+		// Check if block duration has passed
+		if time.Since(health.TempBlockedAt) < health.TempBlockDuration {
+			remaining := health.TempBlockDuration - time.Since(health.TempBlockedAt)
+			log.Printf("[TempBlock] ⏳ Account %s still blocked, %v remaining", phone, remaining.Round(time.Minute))
+			continue
+		}
+		
+		log.Printf("[TempBlock] 🔄 Checking if account %s is available again...", phone)
+		
+		// Try to reconnect and send a test presence
+		m.mu.RLock()
+		acc, exists := m.accounts[phone]
+		m.mu.RUnlock()
+		
+		if !exists || acc == nil || acc.Client == nil {
+			continue
+		}
+		
+		// Try to send presence (lightweight check)
+		err := acc.Client.SendPresence(types.PresenceAvailable)
+		if err != nil {
+			if isTempBlockedError(err) || isBlockedError(err) {
+				// Still blocked, extend the wait
+				health.TempBlockedAt = time.Now()
+				log.Printf("[TempBlock] ❌ Account %s still blocked, will check again in %v", phone, DefaultTempBlockDuration)
+			} else {
+				// Different error, might be connection issue
+				log.Printf("[TempBlock] ⚠️ Account %s error: %v", phone, err)
+			}
+		} else {
+			// Success! Account is available again
+			health.Status = StatusHealthy
+			health.TempBlockedAt = time.Time{}
+			health.LastError = ""
+			health.ConsecutiveFailures = 0
+			log.Printf("[TempBlock] ✅ Account %s is available again!", phone)
+			
+			// Send offline presence
+			_ = acc.Client.SendPresence(types.PresenceUnavailable)
+		}
+		
+		health.LastBlockCheck = time.Now()
+		
+		// Small delay between checks
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// SendTouchToBlockedAccount sends a presence touch to a blocked account (keeps it "warm")
+func (m *ClientManager) SendTouchToBlockedAccount(phone string) {
+	m.mu.RLock()
+	acc, exists := m.accounts[phone]
+	m.mu.RUnlock()
+	
+	if !exists || acc == nil || acc.Client == nil {
+		return
+	}
+	
+	// Just try to connect/send presence - even if blocked, it shows activity
+	if !acc.Connected {
+		_ = acc.Client.Connect()
+		time.Sleep(2 * time.Second)
+	}
+	
+	// Try presence - might fail if blocked, but that's OK
+	_ = acc.Client.SendPresence(types.PresenceAvailable)
+	time.Sleep(1 * time.Second)
+	_ = acc.Client.SendPresence(types.PresenceUnavailable)
+	
+	log.Printf("[TempBlock] 👆 Sent touch to blocked account %s", phone)
 }
 
 // TriggerReconnect manually triggers reconnect for an account
