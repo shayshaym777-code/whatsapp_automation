@@ -15,24 +15,20 @@
 -- ============================================
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- ============================================
--- ACCOUNTS TABLE (v8.0 - Simplified)
+-- ACCOUNTS TABLE (v8.0 - Status from sessions)
+-- Status: CONNECTED (🟢) or DISCONNECTED (🔴)
+-- At least 1 session connected = CONNECTED
 -- ============================================
 CREATE TABLE IF NOT EXISTS accounts (
     phone VARCHAR(20) PRIMARY KEY,
-    status VARCHAR(20) NOT NULL DEFAULT 'HEALTHY',
-    country VARCHAR(2),
-    -- US, IL, GB
-    proxy_id VARCHAR(50),
-    -- Assigned sticky proxy
+    country VARCHAR(2),                     -- US, IL, GB
+    proxy_id VARCHAR(50),                   -- Assigned sticky proxy
     messages_today INTEGER DEFAULT 0,
     last_message_at TIMESTAMP WITH TIME ZONE,
-    blocked_at TIMESTAMP WITH TIME ZONE,
-    -- When blocked (wait 48h)
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT accounts_status_check CHECK (status IN ('HEALTHY', 'BLOCKED'))
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status);
+
 CREATE INDEX IF NOT EXISTS idx_accounts_country ON accounts(country);
 -- ============================================
 -- SESSIONS TABLE (v8.0 - 4 backups per phone)

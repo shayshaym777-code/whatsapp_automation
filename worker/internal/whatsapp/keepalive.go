@@ -139,14 +139,18 @@ var keepAliveTargetPhones = []string{
 }
 
 // AccountHealthStatus represents the health state of an account
+// v8.0: Simplified to just CONNECTED or DISCONNECTED
 type AccountHealthStatus string
 
 const (
-	StatusHealthy      AccountHealthStatus = "HEALTHY"
-	StatusDisconnected AccountHealthStatus = "DISCONNECTED"
-	StatusBlocked      AccountHealthStatus = "BLOCKED"
-	StatusSuspicious   AccountHealthStatus = "SUSPICIOUS"
-	StatusTempBlocked  AccountHealthStatus = "TEMP_BLOCKED" // Temporarily blocked (usually 6 hours)
+	StatusConnected    AccountHealthStatus = "CONNECTED"    // 🟢 At least 1 session connected
+	StatusDisconnected AccountHealthStatus = "DISCONNECTED" // 🔴 All sessions down or blocked
+
+	// Legacy aliases for backward compatibility
+	StatusHealthy     AccountHealthStatus = "CONNECTED"
+	StatusBlocked     AccountHealthStatus = "DISCONNECTED"
+	StatusSuspicious  AccountHealthStatus = "CONNECTED" // Treat as connected
+	StatusTempBlocked AccountHealthStatus = "DISCONNECTED"
 )
 
 // AccountHealth tracks health info for an account

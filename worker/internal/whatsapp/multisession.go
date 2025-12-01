@@ -179,6 +179,8 @@ func (ps *PhoneMultiSession) AllSessionsDown() bool {
 }
 
 // GetStatus returns phone status
+// v8.0: Only 2 statuses - CONNECTED (🟢) or DISCONNECTED (🔴)
+// At least 1 session connected = CONNECTED
 func (ps *PhoneMultiSession) GetStatus() map[string]interface{} {
 	ps.mu.RLock()
 	defer ps.mu.RUnlock()
@@ -195,12 +197,22 @@ func (ps *PhoneMultiSession) GetStatus() map[string]interface{} {
 
 	connected, total := ps.GetSessionCount()
 
+	// v8.0: Simple status logic
+	// 🟢 CONNECTED = at least 1 session connected
+	// 🔴 DISCONNECTED = all sessions down
+	status := "DISCONNECTED"
+	if connected > 0 {
+		status = "CONNECTED"
+	}
+
 	return map[string]interface{}{
-		"phone":          ps.Phone,
-		"active_session": ps.ActiveSession,
-		"sessions":       sessions,
-		"connected":      connected,
-		"total":          total,
+		"phone":             ps.Phone,
+		"status":            status,
+		"active_session":    ps.ActiveSession,
+		"sessions":          sessions,
+		"connected_count":   connected,
+		"total_sessions":    total,
+		"sessions_display":  fmt.Sprintf("%d/%d", connected, total),
 	}
 }
 

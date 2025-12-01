@@ -4,7 +4,8 @@ const { query } = require('../../config/database');
 
 const router = Router();
 
-// v8.0: Simple accounts - HEALTHY or BLOCKED, no warmup
+// v8.0: Simple status - CONNECTED (🟢) or DISCONNECTED (🔴)
+// At least 1 session connected = CONNECTED
 
 // Worker URLs
 const WORKERS = [
@@ -14,29 +15,44 @@ const WORKERS = [
     { id: 'worker-4', url: process.env.WORKER_4_URL || 'http://worker-4:3001', country: 'US' },
 ];
 
+// Helper: Get account status based on sessions
+// 🟢 CONNECTED = at least 1 session connected
+// 🔴 DISCONNECTED = all sessions down
+function getAccountStatus(connectedSessions) {
+    return connectedSessions > 0 ? 'CONNECTED' : 'DISCONNECTED';
+}
+
 // GET /api/accounts - List all accounts with session count
 router.get('/', async (req, res, next) => {
     try {
         const result = await query(`
-            SELECT a.phone, a.status, a.country, a.proxy_id, a.messages_today,
+            SELECT a.phone, a.country, a.proxy_id, a.messages_today,
                    (SELECT COUNT(*) FROM sessions s WHERE s.phone = a.phone) as total_sessions,
-                   (SELECT COUNT(*) FROM sessions s WHERE s.phone = a.phone AND s.status = 'CONNECTED') as active_sessions
+                   (SELECT COUNT(*) FROM sessions s WHERE s.phone = a.phone AND s.status = 'CONNECTED') as connected_sessions
             FROM accounts a
             ORDER BY a.created_at DESC
         `);
 
-        const healthyCount = result.rows.filter(a => a.status === 'HEALTHY' && a.active_sessions > 0).length;
-
-        res.json({
-            accounts: result.rows.map(a => ({
+        const accounts = result.rows.map(a => {
+            const connected = parseInt(a.connected_sessions) || 0;
+            const total = parseInt(a.total_sessions) || 0;
+            return {
                 phone: a.phone,
-                status: a.status,
-                sessions: parseInt(a.total_sessions) || 0,
-                active_sessions: parseInt(a.active_sessions) || 0,
+                status: getAccountStatus(connected),  // 🟢 or 🔴
+                sessions: `${connected}/${total}`,    // "3/4"
+                connected_sessions: connected,
+                total_sessions: total,
                 country: a.country,
                 messages_today: a.messages_today || 0
-            })),
-            total_healthy: healthyCount
+            };
+        });
+
+        const connectedCount = accounts.filter(a => a.status === 'CONNECTED').length;
+
+        res.json({
+            accounts,
+            total_connected: connectedCount,
+            total_accounts: accounts.length
         });
     } catch (err) {
         next(err);
