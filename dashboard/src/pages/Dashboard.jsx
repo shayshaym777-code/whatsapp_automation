@@ -170,6 +170,120 @@ function Dashboard() {
 
     const sendingRate = calculateSendingRate()
 
+    // Generate alerts based on system status
+    const generateAlerts = () => {
+        const alerts = []
+
+        // 1. Check for missing proxies per worker
+        WORKERS.forEach(worker => {
+            const proxy = proxyStats[worker.id]
+            if (!proxy || proxy.total_proxies === 0) {
+                alerts.push({
+                    type: 'error',
+                    icon: '🔴',
+                    title: `חסר Proxy ל-${worker.name}`,
+                    message: `Worker ${worker.country} צריך proxies של ${worker.country}`,
+                    action: `הוסף proxies ל-WORKER_${WORKERS.indexOf(worker) + 1}_PROXY_LIST`
+                })
+            } else if (proxy.total_proxies < 5) {
+                alerts.push({
+                    type: 'warning',
+                    icon: '🟡',
+                    title: `מעט Proxies ל-${worker.name}`,
+                    message: `רק ${proxy.total_proxies} proxies - מומלץ לפחות 10`,
+                    action: null
+                })
+            }
+        })
+
+        // 2. Check for inactive accounts (haven't sent in 24+ hours)
+        const now = new Date()
+        stats.accounts.forEach(account => {
+            if (account.connected && account.logged_in) {
+                const lastActive = account.last_warmup_sent ? new Date(account.last_warmup_sent) : null
+                if (lastActive) {
+                    const hoursSinceActive = (now - lastActive) / (1000 * 60 * 60)
+                    if (hoursSinceActive > 24) {
+                        alerts.push({
+                            type: 'warning',
+                            icon: '⏰',
+                            title: `חשבון לא פעיל`,
+                            message: `${account.phone} לא שלח הודעות ${Math.round(hoursSinceActive)} שעות`,
+                            action: null
+                        })
+                    }
+                }
+            }
+        })
+
+        // 3. Check for disconnected accounts
+        const disconnectedCount = stats.accounts.filter(a => !a.connected || !a.logged_in).length
+        if (disconnectedCount > 0) {
+            alerts.push({
+                type: 'warning',
+                icon: '📴',
+                title: `${disconnectedCount} חשבונות מנותקים`,
+                message: `יש חשבונות שצריכים התחברות מחדש`,
+                action: 'עבור לעמוד Accounts'
+            })
+        }
+
+        // 4. Check for workers offline
+        const offlineWorkers = stats.workers.filter(w => w.status !== 'online')
+        offlineWorkers.forEach(worker => {
+            alerts.push({
+                type: 'error',
+                icon: '🖥️',
+                title: `Worker לא פעיל`,
+                message: `${worker.name} (${worker.country}) לא מגיב`,
+                action: 'בדוק docker compose logs'
+            })
+        })
+
+        // 5. Check for blocked proxies
+        WORKERS.forEach(worker => {
+            const proxy = proxyStats[worker.id]
+            if (proxy?.proxies) {
+                const blockedCount = proxy.proxies.filter(p => p.blocked).length
+                if (blockedCount > 0) {
+                    alerts.push({
+                        type: 'warning',
+                        icon: '🚫',
+                        title: `Proxies חסומים ב-${worker.name}`,
+                        message: `${blockedCount} proxies חסומים - צריך להחליף`,
+                        action: null
+                    })
+                }
+            }
+        })
+
+        // 6. Check for low health scores
+        if (healthSummary?.critical_accounts > 0) {
+            alerts.push({
+                type: 'error',
+                icon: '⚠️',
+                title: `חשבונות במצב קריטי`,
+                message: `${healthSummary.critical_accounts} חשבונות עם ציון בריאות נמוך`,
+                action: 'בדוק Account Health'
+            })
+        }
+
+        // 7. Check if no sending accounts
+        if (stats.sendingAccounts === 0 && stats.totalAccounts > 0) {
+            alerts.push({
+                type: 'error',
+                icon: '🛑',
+                title: `אין חשבונות פעילים`,
+                message: `אף חשבון לא יכול לשלוח הודעות`,
+                action: 'חבר חשבונות בעמוד Add Account'
+            })
+        }
+
+        return alerts
+    }
+
+    const alerts = generateAlerts()
+
     if (loading) {
         return (
             <div className="flex items-center justify-center h-64">
@@ -203,6 +317,20 @@ function Dashboard() {
                     )}
                 </button>
             </div>
+
+            {/* Alerts Section */}
+            {alerts.length > 0 && (
+                <div className="space-y-3">
+                    <h3 className="text-lg font-semibold text-white flex items-center gap-2">
+                        🔔 התראות ({alerts.length})
+                    </h3>
+                    <div className="space-y-2">
+                        {alerts.map((alert, index) => (
+                            <AlertCard key={index} alert={alert} />
+                        ))}
+                    </div>
+                </div>
+            )}
 
             {/* Sending Rate Card - NEW! */}
             <div className="card bg-gradient-to-r from-blue-900/30 to-purple-900/30 border-blue-500/30">
@@ -506,6 +634,33 @@ function HealthItem({ name, status, detail }) {
                 <span className={`badge ${isOnline ? 'badge-success' : 'badge-error'}`}>
                     {isOnline ? 'Healthy' : 'Down'}
                 </span>
+            </div>
+        </div>
+    )
+}
+
+function AlertCard({ alert }) {
+    const bgColors = {
+        error: 'bg-red-500/10 border-red-500/50',
+        warning: 'bg-yellow-500/10 border-yellow-500/50',
+        info: 'bg-blue-500/10 border-blue-500/50'
+    }
+    
+    const textColors = {
+        error: 'text-red-400',
+        warning: 'text-yellow-400',
+        info: 'text-blue-400'
+    }
+
+    return (
+        <div className={`${bgColors[alert.type]} border rounded-lg p-4 flex items-start gap-3`}>
+            <span className="text-2xl">{alert.icon}</span>
+            <div className="flex-1">
+                <h4 className={`font-semibold ${textColors[alert.type]}`}>{alert.title}</h4>
+                <p className="text-gray-400 text-sm mt-1">{alert.message}</p>
+                {alert.action && (
+                    <p className="text-gray-500 text-xs mt-2 italic">💡 {alert.action}</p>
+                )}
             </div>
         </div>
     )
