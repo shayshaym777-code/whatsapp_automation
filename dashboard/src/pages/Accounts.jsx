@@ -3,22 +3,23 @@ import { Link } from 'react-router-dom'
 import {
     WORKERS,
     fetchAllAccounts,
-    disconnectAccount,
-    cleanupAccounts,
-    skipAccountWarmup
+    skipAccountWarmup,
+    triggerReconnect
 } from '../api/workers'
 
 function Accounts() {
     const [accounts, setAccounts] = useState([])
     const [loading, setLoading] = useState(true)
-    const [filter, setFilter] = useState('all') // all, connected, disconnected, warmup, sending
+    const [filter, setFilter] = useState('all') // all, healthy, blocked, suspicious, disconnected, warmup
 
     useEffect(() => {
         fetchAccounts()
+        // Auto-refresh every 60 seconds
+        const interval = setInterval(fetchAccounts, 60000)
+        return () => clearInterval(interval)
     }, [])
 
     const fetchAccounts = async () => {
-        setLoading(true)
         try {
             const allAccounts = await fetchAllAccounts()
             setAccounts(allAccounts)
@@ -29,27 +30,13 @@ function Accounts() {
         }
     }
 
-    const handleDisconnect = async (account) => {
-        if (!confirm(`Disconnect ${account.phone}?`)) return
-
+    const handleReconnect = async (account) => {
         try {
-            await disconnectAccount(account.phone, account.workerPort)
-            fetchAccounts()
+            await triggerReconnect(account.phone, account.workerPort)
+            alert(`Reconnecting ${account.phone}...`)
+            setTimeout(fetchAccounts, 2000)
         } catch (err) {
-            alert('Failed to disconnect: ' + err.message)
-        }
-    }
-
-    const handleDelete = async (account) => {
-        if (!confirm(`Delete ${account.phone}? This will remove the account completely.`)) return
-
-        try {
-            await disconnectAccount(account.phone, account.workerPort)
-            // Small delay then refresh
-            setTimeout(() => fetchAccounts(), 500)
-        } catch (err) {
-            // Even if disconnect fails, refresh to update UI
-            fetchAccounts()
+            alert('Failed to reconnect: ' + err.message)
         }
     }
 
@@ -65,31 +52,21 @@ function Accounts() {
         }
     }
 
-    const handleCleanup = async () => {
-        if (!confirm('Remove all non-logged-in accounts from all workers?')) return
-
-        try {
-            await Promise.all(WORKERS.map(w => cleanupAccounts(w)))
-            alert('Cleanup complete!')
-            fetchAccounts()
-        } catch (err) {
-            alert('Cleanup failed: ' + err.message)
-        }
-    }
-
-    // Calculate stats
-    const connectedCount = accounts.filter(a => a.connected && a.logged_in).length
-    const disconnectedCount = accounts.filter(a => !a.connected || !a.logged_in).length
+    // Calculate stats by health status
+    const healthyCount = accounts.filter(a => getHealthStatus(a) === 'HEALTHY').length
+    const blockedCount = accounts.filter(a => getHealthStatus(a) === 'BLOCKED').length
+    const suspiciousCount = accounts.filter(a => getHealthStatus(a) === 'SUSPICIOUS').length
+    const disconnectedCount = accounts.filter(a => getHealthStatus(a) === 'DISCONNECTED').length
     const warmupCount = accounts.filter(a => !a.warmup_complete && a.connected && a.logged_in).length
-    // Sending = connected + logged in (both warmup and completed)
-    const sendingCount = accounts.filter(a => a.connected && a.logged_in).length
 
     const filteredAccounts = accounts.filter(account => {
+        const status = getHealthStatus(account)
         switch (filter) {
-            case 'connected': return account.connected && account.logged_in
-            case 'disconnected': return !account.connected || !account.logged_in
+            case 'healthy': return status === 'HEALTHY'
+            case 'blocked': return status === 'BLOCKED'
+            case 'suspicious': return status === 'SUSPICIOUS'
+            case 'disconnected': return status === 'DISCONNECTED'
             case 'warmup': return !account.warmup_complete && account.connected && account.logged_in
-            case 'sending': return account.connected && account.logged_in
             default: return true
         }
     })
@@ -108,11 +85,12 @@ function Accounts() {
             <div className="flex items-center justify-between flex-wrap gap-4">
                 <div>
                     <h2 className="text-3xl font-bold text-white mb-2">Accounts</h2>
-                    <p className="text-gray-400">Manage connected WhatsApp accounts</p>
+                    <p className="text-gray-400">Live status of all WhatsApp accounts</p>
                 </div>
-                <div className="flex gap-3">
-                    <button onClick={handleCleanup} className="btn-secondary text-sm">
-                        🧹 Cleanup
+                <div className="flex gap-3 items-center">
+                    <span className="text-gray-500 text-sm">Auto-refresh: 60s</span>
+                    <button onClick={fetchAccounts} className="btn-secondary text-sm">
+                        🔄 Refresh Now
                     </button>
                     <Link to="/accounts/add" className="btn-primary flex items-center gap-2">
                         <span>+</span>
@@ -121,8 +99,8 @@ function Accounts() {
                 </div>
             </div>
 
-            {/* Stats */}
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+            {/* Stats by Health Status */}
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
                 <button
                     onClick={() => setFilter('all')}
                     className={`card text-center cursor-pointer transition-all ${filter === 'all' ? 'border-wa-green' : ''}`}
@@ -131,34 +109,56 @@ function Accounts() {
                     <div className="text-gray-400 text-sm">Total</div>
                 </button>
                 <button
-                    onClick={() => setFilter('sending')}
-                    className={`card text-center cursor-pointer transition-all ${filter === 'sending' ? 'border-wa-green' : ''}`}
+                    onClick={() => setFilter('healthy')}
+                    className={`card text-center cursor-pointer transition-all ${filter === 'healthy' ? 'border-green-500' : ''}`}
                 >
-                    <div className="text-3xl font-bold text-blue-400">{sendingCount}</div>
-                    <div className="text-gray-400 text-sm">📤 Sending</div>
-                </button>
-                <button
-                    onClick={() => setFilter('connected')}
-                    className={`card text-center cursor-pointer transition-all ${filter === 'connected' ? 'border-wa-green' : ''}`}
-                >
-                    <div className="text-3xl font-bold text-green-400">{connectedCount}</div>
-                    <div className="text-gray-400 text-sm">Connected</div>
-                </button>
-                <button
-                    onClick={() => setFilter('disconnected')}
-                    className={`card text-center cursor-pointer transition-all ${filter === 'disconnected' ? 'border-wa-green' : ''}`}
-                >
-                    <div className="text-3xl font-bold text-yellow-400">{disconnectedCount}</div>
-                    <div className="text-gray-400 text-sm">Disconnected</div>
+                    <div className="text-3xl font-bold text-green-400">{healthyCount}</div>
+                    <div className="text-gray-400 text-sm">🟢 Healthy</div>
                 </button>
                 <button
                     onClick={() => setFilter('warmup')}
-                    className={`card text-center cursor-pointer transition-all ${filter === 'warmup' ? 'border-wa-green' : ''}`}
+                    className={`card text-center cursor-pointer transition-all ${filter === 'warmup' ? 'border-orange-500' : ''}`}
                 >
                     <div className="text-3xl font-bold text-orange-400">{warmupCount}</div>
-                    <div className="text-gray-400 text-sm">🔥 In Warmup</div>
+                    <div className="text-gray-400 text-sm">🔥 Warmup</div>
+                </button>
+                <button
+                    onClick={() => setFilter('suspicious')}
+                    className={`card text-center cursor-pointer transition-all ${filter === 'suspicious' ? 'border-yellow-500' : ''}`}
+                >
+                    <div className="text-3xl font-bold text-yellow-400">{suspiciousCount}</div>
+                    <div className="text-gray-400 text-sm">🟠 Suspicious</div>
+                </button>
+                <button
+                    onClick={() => setFilter('disconnected')}
+                    className={`card text-center cursor-pointer transition-all ${filter === 'disconnected' ? 'border-yellow-500' : ''}`}
+                >
+                    <div className="text-3xl font-bold text-yellow-400">{disconnectedCount}</div>
+                    <div className="text-gray-400 text-sm">🟡 Disconnected</div>
+                </button>
+                <button
+                    onClick={() => setFilter('blocked')}
+                    className={`card text-center cursor-pointer transition-all ${filter === 'blocked' ? 'border-red-500' : ''}`}
+                >
+                    <div className="text-3xl font-bold text-red-400">{blockedCount}</div>
+                    <div className="text-gray-400 text-sm">🔴 Blocked</div>
                 </button>
             </div>
+
+            {/* Blocked Warning */}
+            {blockedCount > 0 && (
+                <div className="bg-red-500/10 border border-red-500/50 rounded-lg p-4 flex items-center gap-3">
+                    <span className="text-3xl">🚨</span>
+                    <div>
+                        <h4 className="font-semibold text-red-400">
+                            {blockedCount} account(s) may be BLOCKED!
+                        </h4>
+                        <p className="text-gray-400 text-sm">
+                            These accounts are not receiving/sending messages. They may need to be replaced.
+                        </p>
+                    </div>
+                </div>
+            )}
 
             {/* Accounts List */}
             {filteredAccounts.length === 0 ? (
@@ -177,153 +177,213 @@ function Accounts() {
                     )}
                 </div>
             ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                     {filteredAccounts.map((account, index) => (
-                        <AccountCard
+                        <DetailedAccountCard
                             key={account.phone || index}
                             account={account}
-                            onDisconnect={() => handleDisconnect(account)}
-                            onDelete={() => handleDelete(account)}
+                            onReconnect={() => handleReconnect(account)}
                             onSkipWarmup={() => handleSkipWarmup(account)}
                         />
                     ))}
                 </div>
             )}
-
-            {/* Refresh Button */}
-            <div className="text-center">
-                <button onClick={fetchAccounts} className="btn-secondary">
-                    🔄 Refresh
-                </button>
-            </div>
         </div>
     )
 }
 
-function AccountCard({ account, onDisconnect, onDelete, onSkipWarmup }) {
-    const countryFlags = { US: '🇺🇸', IL: '🇮🇱', GB: '🇬🇧' }
-    const isConnected = account.connected
-    const isLoggedIn = account.logged_in
-    const isActive = isConnected && isLoggedIn
-    const isSending = isActive // Both warmup and completed accounts can send
-    const isWarmup = !account.warmup_complete && isActive
-
-    // Determine status label and color
-    let statusLabel = 'Disconnected'
-    let statusClass = 'badge-error'
-
-    if (isActive) {
-        if (isWarmup) {
-            statusLabel = '🔥 Warming Up'
-            statusClass = 'badge-warning'
-        } else {
-            statusLabel = 'Active'
-            statusClass = 'badge-success'
+// Get health status from account data
+function getHealthStatus(account) {
+    if (!account.connected) return 'DISCONNECTED'
+    if (!account.logged_in) return 'DISCONNECTED'
+    
+    // Check for block indicators
+    if (account.last_error) {
+        const err = account.last_error.toLowerCase()
+        if (err.includes('banned') || err.includes('blocked') || 
+            err.includes('restricted') || err.includes('unusual')) {
+            return 'BLOCKED'
         }
-    } else if (isConnected && !isLoggedIn) {
-        statusLabel = 'Not Logged In'
-        statusClass = 'badge-warning'
     }
+    
+    // Check for suspicious activity (no messages delivered recently)
+    if (account.consecutive_failures > 3) {
+        return 'SUSPICIOUS'
+    }
+    
+    return 'HEALTHY'
+}
+
+// Get stage info from account age
+function getStageInfo(account) {
+    const ageHours = account.account_age_hours || 0
+    const ageDays = ageHours / 24
+    
+    if (account.warmup_complete) {
+        if (ageDays >= 60) return { name: 'Veteran', emoji: '🎖️', limit: 200 }
+        return { name: 'Adult', emoji: '🧑', limit: 100 }
+    }
+    
+    if (ageDays <= 3) return { name: 'New Born', emoji: '🐣', limit: 5 }
+    if (ageDays <= 7) return { name: 'Baby', emoji: '👶', limit: 15 }
+    if (ageDays <= 14) return { name: 'Toddler', emoji: '🧒', limit: 30 }
+    if (ageDays <= 30) return { name: 'Teen', emoji: '👦', limit: 50 }
+    return { name: 'Adult', emoji: '🧑', limit: 100 }
+}
+
+function DetailedAccountCard({ account, onReconnect, onSkipWarmup }) {
+    const countryFlags = { US: '🇺🇸', IL: '🇮🇱', GB: '🇬🇧' }
+    const healthStatus = getHealthStatus(account)
+    const stageInfo = getStageInfo(account)
+    const isWarmup = !account.warmup_complete && account.connected && account.logged_in
+    
+    const ageHours = account.account_age_hours || 0
+    const ageDays = Math.floor(ageHours / 24)
+    
+    // Calculate time since last alive
+    const lastAlive = account.last_warmup_sent ? new Date(account.last_warmup_sent) : null
+    const timeSinceAlive = lastAlive ? Math.round((Date.now() - lastAlive) / 60000) : null
+    
+    const statusConfig = {
+        HEALTHY: { color: 'green', icon: '🟢', label: 'Healthy' },
+        BLOCKED: { color: 'red', icon: '🔴', label: 'BLOCKED!' },
+        SUSPICIOUS: { color: 'yellow', icon: '🟠', label: 'Suspicious' },
+        DISCONNECTED: { color: 'yellow', icon: '🟡', label: 'Disconnected' }
+    }
+    
+    const status = statusConfig[healthStatus]
 
     return (
-        <div className={`card transition-all duration-300 ${isActive
-                ? isWarmup
-                    ? 'border-orange-500/30'
-                    : 'border-green-500/30'
-                : 'border-red-500/30'
-            }`}>
+        <div className={`card transition-all duration-300 border-${status.color}-500/30`}>
+            {/* Header */}
             <div className="flex items-start justify-between mb-4">
                 <div className="flex items-center gap-3">
-                    <div className={`w-12 h-12 rounded-full flex items-center justify-center text-xl ${isActive
-                            ? isWarmup
-                                ? 'bg-orange-500/20'
-                                : 'bg-green-500/20'
-                            : 'bg-red-500/20'
-                        }`}>
-                        {countryFlags[account.workerCountry] || '📱'}
+                    <div className={`w-14 h-14 rounded-full flex items-center justify-center text-2xl bg-${status.color}-500/20`}>
+                        {status.icon}
                     </div>
                     <div>
-                        <h4 className="font-semibold text-white">{account.phone}</h4>
-                        <p className="text-xs text-gray-500">{account.worker}</p>
+                        <h4 className="font-semibold text-white text-lg">{account.phone}</h4>
+                        <p className="text-xs text-gray-500">
+                            {countryFlags[account.workerCountry] || '🌍'} {account.worker}
+                        </p>
                     </div>
                 </div>
-                <span className={`badge ${statusClass}`}>
-                    {statusLabel}
+                <span className={`badge badge-${status.color === 'green' ? 'success' : status.color === 'red' ? 'error' : 'warning'}`}>
+                    {status.label}
                 </span>
             </div>
 
-            <div className="space-y-2 mb-4">
+            {/* Status Details */}
+            <div className="bg-wa-bg rounded-lg p-3 space-y-2 mb-4">
+                <div className="flex justify-between text-sm">
+                    <span className="text-gray-400">Status</span>
+                    <span className={`text-${status.color}-400 font-medium`}>
+                        {status.icon} {status.label}
+                    </span>
+                </div>
                 <div className="flex justify-between text-sm">
                     <span className="text-gray-400">Connected</span>
-                    <span className={isConnected ? 'text-green-400' : 'text-red-400'}>
-                        {isConnected ? '✓ Yes' : '✗ No'}
+                    <span className={account.connected ? 'text-green-400' : 'text-red-400'}>
+                        {account.connected ? '✅ Yes' : '❌ No'}
                     </span>
                 </div>
                 <div className="flex justify-between text-sm">
                     <span className="text-gray-400">Logged In</span>
-                    <span className={isLoggedIn ? 'text-green-400' : 'text-red-400'}>
-                        {isLoggedIn ? '✓ Yes' : '✗ No'}
+                    <span className={account.logged_in ? 'text-green-400' : 'text-red-400'}>
+                        {account.logged_in ? '✅ Yes' : '❌ No'}
                     </span>
                 </div>
                 <div className="flex justify-between text-sm">
-                    <span className="text-gray-400">Sending</span>
-                    <span className={isSending ? 'text-blue-400' : 'text-gray-500'}>
-                        {isSending ? '📤 Yes' : '— No'}
+                    <span className="text-gray-400">Last Alive</span>
+                    <span className="text-gray-300">
+                        {timeSinceAlive !== null 
+                            ? timeSinceAlive < 60 
+                                ? `${timeSinceAlive} min ago`
+                                : `${Math.round(timeSinceAlive / 60)} hours ago`
+                            : 'Unknown'}
+                    </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                    <span className="text-gray-400">Messages Today</span>
+                    <span className="text-gray-300">
+                        {account.today_msgs || 0} / {stageInfo.limit}
+                    </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                    <span className="text-gray-400">Stage</span>
+                    <span className="text-gray-300">
+                        {stageInfo.emoji} {stageInfo.name} (Day {ageDays})
                     </span>
                 </div>
                 <div className="flex justify-between text-sm">
                     <span className="text-gray-400">Warmup</span>
                     <span className={account.warmup_complete ? 'text-green-400' : 'text-orange-400'}>
-                        {account.warmup_complete ? '✓ Complete' : '🔥 In Progress'}
-                    </span>
-                </div>
-                <div className="flex justify-between text-sm">
-                    <span className="text-gray-400">Device ID</span>
-                    <span className="text-gray-300 font-mono text-xs">
-                        {account.device_id?.slice(0, 8) || 'N/A'}...
+                        {account.warmup_complete ? '✅ Complete' : '🔥 In Progress'}
                     </span>
                 </div>
             </div>
 
+            {/* Error Message */}
+            {account.last_error && (
+                <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 mb-4">
+                    <div className="text-red-400 text-sm font-medium">⚠️ Error:</div>
+                    <div className="text-gray-400 text-xs mt-1">{account.last_error}</div>
+                </div>
+            )}
+
+            {/* Block Warning */}
+            {healthStatus === 'BLOCKED' && (
+                <div className="bg-red-500/20 border border-red-500/50 rounded-lg p-3 mb-4">
+                    <div className="text-red-400 text-sm font-semibold">🚨 This account may be banned!</div>
+                    <div className="text-gray-400 text-xs mt-1">
+                        Last successful message: {timeSinceAlive ? `${Math.round(timeSinceAlive / 60)} hours ago` : 'Unknown'}
+                    </div>
+                </div>
+            )}
+
+            {/* Actions - NO DELETE BUTTON */}
             <div className="flex gap-2 flex-wrap">
-                {isActive ? (
-                    <>
-                        <Link
-                            to={`/send?from=${encodeURIComponent(account.phone)}`}
-                            className="flex-1 py-2 px-3 bg-wa-green/20 text-wa-green rounded-lg text-sm font-medium
-                             hover:bg-wa-green/30 transition-colors text-center"
-                        >
-                            Send
-                        </Link>
-                        {isWarmup && (
-                            <button
-                                onClick={onSkipWarmup}
-                                className="py-2 px-3 bg-orange-500/20 text-orange-400 rounded-lg text-sm font-medium
-                                 hover:bg-orange-500/30 transition-colors"
-                                title="Skip Warmup"
-                            >
-                                ⏭️
-                            </button>
-                        )}
-                        <button
-                            onClick={onDisconnect}
-                            className="py-2 px-3 bg-red-500/20 text-red-400 rounded-lg text-sm font-medium
-                             hover:bg-red-500/30 transition-colors"
-                            title="Disconnect"
-                        >
-                            ✗
-                        </button>
-                    </>
-                ) : (
-                    <>
-                        <button
-                            onClick={onDelete}
-                            className="flex-1 py-2 px-3 bg-red-500/20 text-red-400 rounded-lg text-sm font-medium
-                             hover:bg-red-500/30 transition-colors text-center"
-                        >
-                            🗑️ Delete
-                        </button>
-                    </>
+                {healthStatus === 'HEALTHY' && (
+                    <Link
+                        to={`/send?from=${encodeURIComponent(account.phone)}`}
+                        className="flex-1 py-2 px-3 bg-wa-green/20 text-wa-green rounded-lg text-sm font-medium
+                         hover:bg-wa-green/30 transition-colors text-center"
+                    >
+                        📤 Send Message
+                    </Link>
+                )}
+                
+                {isWarmup && (
+                    <button
+                        onClick={onSkipWarmup}
+                        className="py-2 px-3 bg-orange-500/20 text-orange-400 rounded-lg text-sm font-medium
+                         hover:bg-orange-500/30 transition-colors"
+                        title="Skip Warmup"
+                    >
+                        ⏭️ Skip Warmup
+                    </button>
+                )}
+                
+                {healthStatus === 'DISCONNECTED' && (
+                    <button
+                        onClick={onReconnect}
+                        className="flex-1 py-2 px-3 bg-blue-500/20 text-blue-400 rounded-lg text-sm font-medium
+                         hover:bg-blue-500/30 transition-colors text-center"
+                    >
+                        🔄 Reconnect
+                    </button>
+                )}
+                
+                {healthStatus === 'SUSPICIOUS' && (
+                    <div className="flex-1 py-2 px-3 bg-yellow-500/10 text-yellow-400 rounded-lg text-sm text-center">
+                        ⚠️ Needs Attention
+                    </div>
+                )}
+                
+                {healthStatus === 'BLOCKED' && (
+                    <div className="flex-1 py-2 px-3 bg-red-500/10 text-red-400 rounded-lg text-sm text-center">
+                        🔴 Account Blocked
+                    </div>
                 )}
             </div>
         </div>

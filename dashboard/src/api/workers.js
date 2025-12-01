@@ -601,3 +601,31 @@ export function getRecommendedAction(safetyScore) {
   return { action: 'stop', color: 'red', description: 'Stop immediately' }
 }
 
+/**
+ * Trigger reconnect for a disconnected account
+ */
+export async function triggerReconnect(phone, workerPort) {
+  const worker = WORKERS.find(w => w.port === workerPort)
+  if (!worker) throw new Error('Worker not found')
+
+  const url = getWorkerUrl(worker)
+  const res = await fetch(`${url}/accounts/${encodeURIComponent(phone)}/reconnect`, {
+    method: 'POST',
+    headers: getHeaders()
+  })
+
+  if (!res.ok) {
+    const text = await res.text()
+    let error = 'Failed to reconnect'
+    try {
+      const json = JSON.parse(text)
+      error = json.error || json.message || error
+    } catch (e) {
+      error = text || error
+    }
+    throw new Error(error)
+  }
+
+  return res.json()
+}
+

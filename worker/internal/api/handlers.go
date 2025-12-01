@@ -70,6 +70,10 @@ func (s *Server) StartBackgroundServices(ctx context.Context) {
 	// Start auto warmup for new accounts
 	s.client.StartAutoWarmup()
 	log.Printf("[STARTUP] Auto warmup system started")
+
+	// Start keep alive scheduler (sends messages every hour, checks health every 5 min)
+	s.client.StartKeepAlive()
+	log.Printf("[STARTUP] Keep alive system started")
 }
 
 // GetClientManager returns the client manager (for external access if needed)
@@ -106,6 +110,12 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	// Warmup endpoints
 	r.HandleFunc("/warmup/status", s.handleWarmupStatus).Methods(http.MethodGet)
 	r.HandleFunc("/accounts/{phone}/skip-warmup", s.handleSkipWarmup).Methods(http.MethodPost)
+
+	// Reconnect endpoint
+	r.HandleFunc("/accounts/{phone}/reconnect", s.handleAccountReconnect).Methods(http.MethodPost)
+
+	// Health endpoints
+	r.HandleFunc("/accounts/health", s.handleAccountsHealth).Methods(http.MethodGet)
 
 	// Proxy endpoints
 	r.HandleFunc("/proxy/stats", s.handleProxyStats).Methods(http.MethodGet)
@@ -517,5 +527,53 @@ func (s *Server) handleProxyStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"proxy":   stats,
+	})
+}
+
+// POST /accounts/{phone}/reconnect - Manually trigger reconnect for an account
+func (s *Server) handleAccountReconnect(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	phone := vars["phone"]
+
+	if phone == "" {
+		writeError(w, http.StatusBadRequest, "phone is required")
+		return
+	}
+
+	err := s.client.TriggerReconnect(phone)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to reconnect: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"message": "Reconnect triggered for " + phone,
+	})
+}
+
+// GET /accounts/health - Get health status of all accounts
+func (s *Server) handleAccountsHealth(w http.ResponseWriter, r *http.Request) {
+	healthMap := s.client.GetAllAccountsHealth()
+
+	accounts := make([]map[string]interface{}, 0)
+	for phone, health := range healthMap {
+		if health == nil {
+			continue
+		}
+		accounts = append(accounts, map[string]interface{}{
+			"phone":               phone,
+			"status":              health.Status,
+			"last_alive":          health.LastAlive,
+			"last_message_sent":   health.LastMessageSent,
+			"last_error":          health.LastError,
+			"consecutive_failures": health.ConsecutiveFailures,
+			"messages_today":      health.MessagesToday,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":  true,
+		"accounts": accounts,
 	})
 }
