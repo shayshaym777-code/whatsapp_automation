@@ -488,10 +488,8 @@ func (s *Server) handleProxyStats(w http.ResponseWriter, r *http.Request) {
 	proxyPool := s.client.GetProxyPool()
 
 	if proxyPool != nil && proxyPool.IsEnabled() {
-		// Get assignment stats (which phone has which proxy)
-		stats = proxyPool.GetAssignmentStats()
-		stats["mode"] = "sticky_assignment"
-		stats["description"] = "Each phone number gets a dedicated proxy"
+		// Get rotation stats
+		stats = proxyPool.GetStats()
 	} else if s.ProxyConfig != nil && s.ProxyConfig.Enabled {
 		stats = map[string]interface{}{
 			"mode": "single_proxy",
@@ -512,9 +510,9 @@ func (s *Server) handleProxyStats(w http.ResponseWriter, r *http.Request) {
 	stats["worker_id"] = s.WorkerID
 	stats["proxy_country"] = s.ProxyCountry
 
-	// Add account proxy info from client manager
-	accountProxies := s.client.GetAccountProxyAssignments()
-	stats["account_proxies"] = accountProxies
+	// Add account stats from client manager
+	accountStats := s.client.GetAccountStats()
+	stats["accounts"] = accountStats
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success": true,

@@ -54,7 +54,10 @@ type ClientManager struct {
 
 	// Proxy configuration
 	proxyConfig *config.ProxyConfig
-	proxyPool   *config.ProxyPool // Pool for sticky proxy assignment
+	proxyPool   *config.ProxyPool // Pool for proxy rotation
+
+	// Message counting for pauses
+	sessionMsgCount int // Messages sent in current session
 }
 
 // AccountClient represents a connected WhatsApp account
@@ -76,11 +79,14 @@ type AccountClient struct {
 	CreatedAt      time.Time // When account was first connected
 	LastWarmupSent time.Time // Last warmup message time
 	WarmupComplete bool      // True after 3 days of warmup
+	WarmupStage    string    // Current stage: new_born, baby, toddler, teen, adult, veteran
 
-	// Proxy assignment - each account gets a dedicated proxy
-	AssignedProxy    string // Full proxy URL assigned to this account
-	ProxyFailCount   int    // Number of consecutive proxy failures
-	LastProxyFailure time.Time
+	// Message tracking for pauses
+	SessionMsgCount int // Messages sent in current session (reset on pause)
+	TotalMsgToday   int // Total messages sent today
+
+	// Mutex for thread-safe access
+	mu sync.RWMutex
 }
 
 // NewClientManager creates a new client manager for this worker
@@ -89,9 +95,9 @@ func NewClientManager(fp fingerprint.DeviceFingerprint, proxyCountry, workerID s
 	os.MkdirAll(QRCodeDir, 0755)
 	os.MkdirAll(getSessionsDir(), 0755)
 
-	// Load proxy pool for sticky assignment
+	// Load proxy pool for rotation (every 10-20 messages)
 	proxyPool := config.LoadProxyPool()
-	log.Printf("[ClientManager] Initialized with %d proxies for sticky assignment", proxyPool.Count())
+	log.Printf("[ClientManager] Initialized with %d proxies for rotation", proxyPool.Count())
 
 	return &ClientManager{
 		Fingerprint:  fp,
@@ -214,28 +220,23 @@ func (m *ClientManager) ConnectAccount(ctx context.Context, phone string) (*Conn
 	store.DeviceProps.PlatformType = &platform
 	store.DeviceProps.Os = &osName
 
-	// Load existing metadata FIRST to get assigned proxy
+	// Load existing metadata
 	meta := m.loadAccountMeta(phone)
 	isNewAccount := meta == nil
 
-	// Determine which proxy to use
-	var assignedProxy string
-	if meta != nil && meta.AssignedProxy != "" {
-		// Use existing assigned proxy
-		assignedProxy = meta.AssignedProxy
-		log.Printf("[%s] Using existing assigned proxy: %s", phone, truncateProxy(assignedProxy))
-	} else if m.proxyPool != nil && m.proxyPool.Count() > 0 {
-		// Assign a new proxy from the pool
-		proxy := m.proxyPool.AssignProxyToPhone(phone)
+	// Get proxy from rotating pool for this connection
+	var proxyURL string
+	if m.proxyPool != nil && m.proxyPool.Count() > 0 {
+		proxy := m.proxyPool.GetProxyForMessage()
 		if proxy.Enabled {
-			assignedProxy = proxy.GetURL()
-			log.Printf("[%s] Assigned NEW proxy: %s", phone, truncateProxy(assignedProxy))
+			proxyURL = proxy.GetURL()
+			log.Printf("[%s] Using rotating proxy: %s", phone, proxy.String())
 		}
 	}
 
-	// Create WhatsApp client with the assigned proxy
+	// Create WhatsApp client with proxy
 	clientLog := waLog.Stdout("Client-"+phone, "INFO", true)
-	client, err := m.createClientWithProxy(device, clientLog, assignedProxy)
+	client, err := m.createClientWithProxy(device, clientLog, proxyURL)
 	if err != nil {
 		container.Close()
 		return nil, fmt.Errorf("failed to create client with proxy: %w", err)
@@ -243,12 +244,11 @@ func (m *ClientManager) ConnectAccount(ctx context.Context, phone string) (*Conn
 
 	// Create account entry
 	acc := &AccountClient{
-		Phone:         phone,
-		Client:        client,
-		Container:     container,
-		Connected:     false,
-		LoggedIn:      false,
-		AssignedProxy: assignedProxy,
+		Phone:     phone,
+		Client:    client,
+		Container: container,
+		Connected: false,
+		LoggedIn:  false,
 	}
 
 	// Apply rest of metadata
@@ -508,28 +508,23 @@ func (m *ClientManager) ConnectWithPairingCode(ctx context.Context, phone string
 	store.DeviceProps.PlatformType = &platform
 	store.DeviceProps.Os = &osName
 
-	// Load existing metadata FIRST to get assigned proxy
+	// Load existing metadata
 	metaPair := m.loadAccountMeta(phone)
 	isNewAccountPair := metaPair == nil
 
-	// Determine which proxy to use
-	var assignedProxyPair string
-	if metaPair != nil && metaPair.AssignedProxy != "" {
-		// Use existing assigned proxy
-		assignedProxyPair = metaPair.AssignedProxy
-		log.Printf("[%s] Using existing assigned proxy: %s", phone, truncateProxy(assignedProxyPair))
-	} else if m.proxyPool != nil && m.proxyPool.Count() > 0 {
-		// Assign a new proxy from the pool
-		proxy := m.proxyPool.AssignProxyToPhone(phone)
+	// Get proxy from rotating pool for this connection
+	var proxyURLPair string
+	if m.proxyPool != nil && m.proxyPool.Count() > 0 {
+		proxy := m.proxyPool.GetProxyForMessage()
 		if proxy.Enabled {
-			assignedProxyPair = proxy.GetURL()
-			log.Printf("[%s] Assigned NEW proxy for pairing: %s", phone, truncateProxy(assignedProxyPair))
+			proxyURLPair = proxy.GetURL()
+			log.Printf("[%s] Using rotating proxy for pairing: %s", phone, proxy.String())
 		}
 	}
 
-	// Create WhatsApp client with the assigned proxy
+	// Create WhatsApp client with proxy
 	clientLog := waLog.Stdout("Client-"+phone, "INFO", true)
-	client, err := m.createClientWithProxy(device, clientLog, assignedProxyPair)
+	client, err := m.createClientWithProxy(device, clientLog, proxyURLPair)
 	if err != nil {
 		container.Close()
 		return nil, fmt.Errorf("failed to create client with proxy: %w", err)
@@ -537,12 +532,11 @@ func (m *ClientManager) ConnectWithPairingCode(ctx context.Context, phone string
 
 	// Create account entry
 	acc := &AccountClient{
-		Phone:         phone,
-		Client:        client,
-		Container:     container,
-		Connected:     false,
-		LoggedIn:      false,
-		AssignedProxy: assignedProxyPair,
+		Phone:     phone,
+		Client:    client,
+		Container: container,
+		Connected: false,
+		LoggedIn:  false,
 	}
 
 	// Apply rest of metadata
@@ -708,7 +702,7 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 }
 
 // SendMessage sends a text message from one account to a recipient
-// Includes anti-ban measures: typing simulation, message variation, health reporting
+// Includes anti-ban measures: typing simulation, message variation, pauses, proxy rotation
 func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, message string) (*SendResult, error) {
 	m.mu.RLock()
 	acc, exists := m.accounts[fromPhone]
@@ -732,7 +726,12 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 	variedMessage := applyMessageVariation(message)
 
 	// === ANTI-BAN: Get stage-based delay ===
-	stageDelay := getDelayByStage(acc)
+	acc.mu.RLock()
+	stage := acc.WarmupStage
+	sessionCount := acc.SessionMsgCount
+	acc.mu.RUnlock()
+	
+	stageDelay := getDelayByStage(stage)
 	
 	// === ANTI-BAN: Simulate typing (human-like delay) ===
 	typingDelay := calculateTypingDelay(variedMessage)
@@ -740,12 +739,31 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 	// Total delay = stage delay + typing simulation
 	totalDelay := stageDelay + typingDelay
 
+	// === ANTI-BAN: Apply pauses every 10/50/100 messages ===
+	pauseDelay := m.applyPauses(sessionCount + 1)
+	if pauseDelay > 0 {
+		log.Printf("[%s] Taking a break: %v (after %d messages)", fromPhone, pauseDelay, sessionCount+1)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(pauseDelay):
+		}
+	}
+
+	// === ANTI-BAN: Get rotating proxy ===
+	proxy := m.proxyPool.GetProxyForMessage()
+	proxyInfo := "none"
+	if proxy.Enabled {
+		proxyInfo = proxy.String()
+	}
+
 	// Send "composing" presence to show typing indicator
 	if err := acc.Client.SendPresence(ctx, types.PresenceAvailable); err != nil {
 		log.Printf("[%s] Failed to send presence: %v", fromPhone, err)
 	}
 
-	log.Printf("[%s] Waiting %v before sending (stage: %v, typing: %v)", fromPhone, totalDelay, stageDelay, typingDelay)
+	log.Printf("[%s] Sending to %s (stage: %s, delay: %v, proxy: %s)", 
+		fromPhone, toPhone, stage, totalDelay, proxyInfo)
 
 	// Wait for total delay
 	select {
@@ -768,18 +786,24 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 	if err != nil {
 		// Check if this might be a proxy failure
 		if isProxyError(err) {
-			m.handleProxyFailure(fromPhone, acc)
+			log.Printf("[%s] Proxy error detected, will rotate on next message", fromPhone)
 		}
 		return nil, fmt.Errorf("failed to send message: %w", err)
 	}
 
-	// Reset proxy failure count on success
-	if acc.ProxyFailCount > 0 {
-		acc.ProxyFailCount = 0
-		log.Printf("[%s] Proxy failure count reset after successful send", fromPhone)
-	}
+	// Increment message counters
+	acc.mu.Lock()
+	acc.SessionMsgCount++
+	acc.TotalMsgToday++
+	acc.mu.Unlock()
 
-	log.Printf("[%s] Message sent to %s (delay: %v, proxy: %s)", fromPhone, toPhone, totalDelay, truncateProxy(acc.AssignedProxy))
+	// Also increment session-wide counter
+	m.mu.Lock()
+	m.sessionMsgCount++
+	m.mu.Unlock()
+
+	log.Printf("[%s] ✅ Message sent to %s (session: %d, today: %d)", 
+		fromPhone, toPhone, acc.SessionMsgCount, acc.TotalMsgToday)
 
 	return &SendResult{
 		MessageID: resp.ID,
@@ -787,6 +811,60 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 		FromPhone: fromPhone,
 		ToPhone:   toPhone,
 	}, nil
+}
+
+// applyPauses returns the pause duration based on message count
+// Every 10 messages: 30-120 seconds
+// Every 50 messages: 5-15 minutes
+// Every 100 messages: 15-30 minutes
+func (m *ClientManager) applyPauses(msgCount int) time.Duration {
+	if msgCount%100 == 0 {
+		// Long break: 15-30 minutes
+		pause := rand.Intn(900) + 900 // 900-1800 seconds
+		return time.Duration(pause) * time.Second
+	}
+	
+	if msgCount%50 == 0 {
+		// Session break: 5-15 minutes
+		pause := rand.Intn(600) + 300 // 300-900 seconds
+		return time.Duration(pause) * time.Second
+	}
+	
+	if msgCount%10 == 0 {
+		// Short break: 30-120 seconds
+		pause := rand.Intn(90) + 30 // 30-120 seconds
+		return time.Duration(pause) * time.Second
+	}
+	
+	return 0
+}
+
+// getDelayByStage returns the delay based on warmup stage
+func getDelayByStage(stage string) time.Duration {
+	delays := map[string][2]int{
+		"new_born": {30, 60},  // 30-60 seconds
+		"baby":     {20, 40},  // 20-40 seconds
+		"toddler":  {10, 20},  // 10-20 seconds
+		"teen":     {5, 10},   // 5-10 seconds
+		"adult":    {3, 7},    // 3-7 seconds
+		"veteran":  {1, 5},    // 1-5 seconds
+	}
+
+	d, ok := delays[stage]
+	if !ok || len(d) != 2 {
+		d = delays["adult"] // Default to adult
+	}
+
+	// Add jitter
+	base := rand.Intn(d[1]-d[0]+1) + d[0]
+	jitter := (rand.Float64() - 0.5) * 2 // -1 to +1 second
+	
+	totalSeconds := float64(base) + jitter
+	if totalSeconds < 1 {
+		totalSeconds = 1
+	}
+	
+	return time.Duration(totalSeconds * float64(time.Second))
 }
 
 // isProxyError checks if an error is likely proxy-related
@@ -814,35 +892,6 @@ func isProxyError(err error) bool {
 	return false
 }
 
-// handleProxyFailure handles proxy failures and potentially reassigns proxy
-func (m *ClientManager) handleProxyFailure(phone string, acc *AccountClient) {
-	acc.ProxyFailCount++
-	acc.LastProxyFailure = time.Now()
-
-	log.Printf("[%s] Proxy failure #%d for proxy: %s", phone, acc.ProxyFailCount, truncateProxy(acc.AssignedProxy))
-
-	// After 3 consecutive failures, try to reassign proxy
-	if acc.ProxyFailCount >= 3 && m.proxyPool != nil && m.proxyPool.Count() > 1 {
-		log.Printf("[%s] Too many proxy failures, attempting to reassign proxy...", phone)
-
-		newProxy := m.proxyPool.ReassignProxy(phone)
-		if newProxy.Enabled && newProxy.GetURL() != acc.AssignedProxy {
-			oldProxy := acc.AssignedProxy
-			acc.AssignedProxy = newProxy.GetURL()
-			acc.ProxyFailCount = 0
-
-			// Save the new assignment
-			if err := m.saveAccountMeta(phone, acc); err != nil {
-				log.Printf("[%s] Failed to save new proxy assignment: %v", phone, err)
-			}
-
-			log.Printf("[%s] PROXY REASSIGNED: %s -> %s", phone, truncateProxy(oldProxy), truncateProxy(acc.AssignedProxy))
-
-			// Note: The client will use the new proxy on next reconnect
-			// For immediate effect, we could disconnect and reconnect, but that's disruptive
-		}
-	}
-}
 
 // applyMessageVariation adds invisible characters for uniqueness
 func applyMessageVariation(message string) string {
@@ -866,54 +915,28 @@ func applyMessageVariation(message string) string {
 	return result
 }
 
-// getDelayByStage returns the delay range based on account warmup stage
-// This is the PRIMARY delay between messages for anti-ban protection
-func getDelayByStage(acc *AccountClient) time.Duration {
-	// Stage-based delays (in seconds)
-	// These are the main delays between messages to avoid detection
-	type delayRange struct {
-		min int
-		max int
-	}
-
-	var delays delayRange
-
-	if !acc.WarmupComplete {
-		// Calculate days since creation
+// getWarmupStage determines the warmup stage based on account age
+func getWarmupStage(acc *AccountClient) string {
+	if acc.WarmupComplete {
 		daysSinceCreation := time.Since(acc.CreatedAt).Hours() / 24
-
-		if daysSinceCreation <= 3 {
-			// New Born: 30-60 seconds
-			delays = delayRange{30, 60}
-		} else if daysSinceCreation <= 7 {
-			// Baby: 20-40 seconds
-			delays = delayRange{20, 40}
-		} else if daysSinceCreation <= 14 {
-			// Toddler: 10-20 seconds
-			delays = delayRange{10, 20}
-		} else if daysSinceCreation <= 30 {
-			// Teen: 5-10 seconds
-			delays = delayRange{5, 10}
-		} else {
-			// Should be adult by now
-			delays = delayRange{3, 7}
-		}
-	} else {
-		// Warmup complete - check if veteran (60+ days)
-		daysSinceCreation := time.Since(acc.CreatedAt).Hours() / 24
-
 		if daysSinceCreation >= 60 {
-			// Veteran: 1-5 seconds
-			delays = delayRange{1, 5}
-		} else {
-			// Adult: 3-7 seconds
-			delays = delayRange{3, 7}
+			return "veteran"
 		}
+		return "adult"
 	}
 
-	// Random delay within range
-	delaySeconds := delays.min + rand.Intn(delays.max-delays.min+1)
-	return time.Duration(delaySeconds) * time.Second
+	daysSinceCreation := time.Since(acc.CreatedAt).Hours() / 24
+
+	if daysSinceCreation <= 3 {
+		return "new_born"
+	} else if daysSinceCreation <= 7 {
+		return "baby"
+	} else if daysSinceCreation <= 14 {
+		return "toddler"
+	} else if daysSinceCreation <= 30 {
+		return "teen"
+	}
+	return "adult"
 }
 
 // calculateTypingDelay simulates human typing speed (additional to stage delay)
@@ -1220,27 +1243,22 @@ func (m *ClientManager) loadAndValidateSession(ctx context.Context, phone string
 	store.DeviceProps.PlatformType = &platform
 	store.DeviceProps.Os = &osName
 
-	// Load existing metadata FIRST to get assigned proxy
+	// Load existing metadata
 	loadedMeta := m.loadAccountMeta(phone)
 
-	// Determine which proxy to use
-	var assignedProxyLoad string
-	if loadedMeta != nil && loadedMeta.AssignedProxy != "" {
-		// Use existing assigned proxy
-		assignedProxyLoad = loadedMeta.AssignedProxy
-		log.Printf("[%s] Restoring assigned proxy: %s", phone, truncateProxy(assignedProxyLoad))
-	} else if m.proxyPool != nil && m.proxyPool.Count() > 0 {
-		// Assign a new proxy from the pool (shouldn't happen for existing sessions)
-		proxy := m.proxyPool.AssignProxyToPhone(phone)
+	// Get proxy from rotating pool for this connection
+	var proxyURLLoad string
+	if m.proxyPool != nil && m.proxyPool.Count() > 0 {
+		proxy := m.proxyPool.GetProxyForMessage()
 		if proxy.Enabled {
-			assignedProxyLoad = proxy.GetURL()
-			log.Printf("[%s] Assigned proxy for existing session: %s", phone, truncateProxy(assignedProxyLoad))
+			proxyURLLoad = proxy.GetURL()
+			log.Printf("[%s] Using rotating proxy for session: %s", phone, proxy.String())
 		}
 	}
 
-	// Create client with quieter logging and the assigned proxy
+	// Create client with quieter logging and proxy
 	clientLog := waLog.Stdout("Client-"+phone, "WARN", true)
-	client, err := m.createClientWithProxy(device, clientLog, assignedProxyLoad)
+	client, err := m.createClientWithProxy(device, clientLog, proxyURLLoad)
 	if err != nil {
 		container.Close()
 		return false, fmt.Errorf("failed to create client with proxy: %w", err)
@@ -1255,7 +1273,6 @@ func (m *ClientManager) loadAndValidateSession(ctx context.Context, phone string
 		LoggedIn:           false,
 		lastConnectedState: false,
 		lastLoggedInState:  false,
-		AssignedProxy:      assignedProxyLoad,
 	}
 
 	// Apply rest of metadata
@@ -1335,21 +1352,23 @@ type AccountMeta struct {
 	CreatedAt      string `json:"created_at"`
 	LastWarmupSent string `json:"last_warmup_sent,omitempty"`
 	WarmupComplete bool   `json:"warmup_complete"`
-	AssignedProxy  string `json:"assigned_proxy,omitempty"` // Dedicated proxy URL for this account
+	WarmupStage    string `json:"warmup_stage,omitempty"` // Current warmup stage
 }
 
 // saveAccountMeta saves account metadata to a JSON file
 func (m *ClientManager) saveAccountMeta(phone string, acc *AccountClient) error {
 	metaFile := filepath.Join(getSessionsDir(), fmt.Sprintf("%s.meta.json", sanitizePhone(phone)))
 
+	acc.mu.RLock()
 	meta := AccountMeta{
 		CreatedAt:      acc.CreatedAt.Format(time.RFC3339),
 		WarmupComplete: acc.WarmupComplete,
-		AssignedProxy:  acc.AssignedProxy, // Save dedicated proxy assignment
+		WarmupStage:    acc.WarmupStage,
 	}
 	if !acc.LastWarmupSent.IsZero() {
 		meta.LastWarmupSent = acc.LastWarmupSent.Format(time.RFC3339)
 	}
+	acc.mu.RUnlock()
 
 	jsonData, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
@@ -1360,7 +1379,7 @@ func (m *ClientManager) saveAccountMeta(phone string, acc *AccountClient) error 
 		return fmt.Errorf("failed to write meta file: %w", err)
 	}
 
-	log.Printf("[%s] Saved account meta (proxy: %s)", phone, truncateProxy(acc.AssignedProxy))
+	log.Printf("[%s] Saved account meta (stage: %s)", phone, acc.WarmupStage)
 	return nil
 }
 
@@ -1418,12 +1437,15 @@ func (m *ClientManager) applyAccountMeta(acc *AccountClient, meta *AccountMeta) 
 	}
 
 	acc.WarmupComplete = meta.WarmupComplete
-
-	// Restore assigned proxy
-	if meta.AssignedProxy != "" {
-		acc.AssignedProxy = meta.AssignedProxy
-		log.Printf("[%s] Restored assigned proxy from meta: %s", acc.Phone, truncateProxy(acc.AssignedProxy))
+	
+	// Restore warmup stage
+	if meta.WarmupStage != "" {
+		acc.WarmupStage = meta.WarmupStage
+	} else {
+		// Calculate stage based on age
+		acc.WarmupStage = getWarmupStage(acc)
 	}
+	log.Printf("[%s] Restored account meta (stage: %s, warmup complete: %v)", acc.Phone, acc.WarmupStage, acc.WarmupComplete)
 }
 
 // UpdateWarmupSent updates the last warmup sent time and saves metadata
@@ -1502,28 +1524,24 @@ func (m *ClientManager) GetActiveAccounts() []*AccountClient {
 	return active
 }
 
-// GetAccountProxyAssignments returns proxy assignments for all accounts
-func (m *ClientManager) GetAccountProxyAssignments() []map[string]interface{} {
+// GetAccountStats returns statistics for all accounts
+func (m *ClientManager) GetAccountStats() []map[string]interface{} {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	result := make([]map[string]interface{}, 0, len(m.accounts))
 	for _, acc := range m.accounts {
-		proxyDisplay := acc.AssignedProxy
-		if len(proxyDisplay) > 70 {
-			proxyDisplay = proxyDisplay[:70] + "..."
-		}
-		if proxyDisplay == "" {
-			proxyDisplay = "none"
-		}
-
+		acc.mu.RLock()
 		result = append(result, map[string]interface{}{
 			"phone":            acc.Phone,
-			"assigned_proxy":   proxyDisplay,
 			"logged_in":        acc.LoggedIn,
 			"connected":        acc.Connected,
-			"proxy_fail_count": acc.ProxyFailCount,
+			"warmup_stage":     acc.WarmupStage,
+			"warmup_complete":  acc.WarmupComplete,
+			"session_msgs":     acc.SessionMsgCount,
+			"today_msgs":       acc.TotalMsgToday,
 		})
+		acc.mu.RUnlock()
 	}
 	return result
 }

@@ -21,18 +21,21 @@ type ProxyConfig struct {
 	Enabled bool
 }
 
-// ProxyPool manages multiple proxies with assignment to accounts
-type ProxyPool struct {
-	proxies       []*ProxyConfig
-	currentIndex  int
-	useCount      map[int]int // Track usage per proxy
-	lastUsed      map[int]time.Time
-	maxPerProxy   int // Max messages before rotation (not used in sticky mode)
-	cooldownHours int // Hours before reusing same proxy
-	mu            sync.Mutex
+// ProxyUsage tracks usage of a proxy
+type ProxyUsage struct {
+	MessageCount int
+	LastUsed     time.Time
+	Blocked      bool
+}
 
-	// Sticky proxy assignments: phone -> proxy URL
-	assignments map[string]string
+// ProxyPool manages multiple proxies with rotation every 10-20 messages
+type ProxyPool struct {
+	proxies        []*ProxyConfig
+	usage          map[int]*ProxyUsage // Track usage per proxy index
+	currentIndex   int
+	rotateAfter    int           // Messages before rotation (10-20)
+	cooldownHours  int           // Hours before reusing same proxy
+	mu             sync.Mutex
 }
 
 // LoadProxyConfig loads proxy configuration from environment variables
@@ -59,15 +62,12 @@ func LoadProxyConfig() *ProxyConfig {
 
 // LoadProxyPool loads multiple proxies from environment
 // Format: PROXY_LIST="host1:port1:user1:pass1,host2:port2:user2:pass2"
-// Or uses single proxy if PROXY_LIST not set
 func LoadProxyPool() *ProxyPool {
 	pool := &ProxyPool{
 		proxies:       make([]*ProxyConfig, 0),
-		useCount:      make(map[int]int),
-		lastUsed:      make(map[int]time.Time),
-		maxPerProxy:   15, // Not used in sticky mode
-		cooldownHours: 1,  // 1 hour cooldown
-		assignments:   make(map[string]string),
+		usage:         make(map[int]*ProxyUsage),
+		rotateAfter:   10 + rand.Intn(11), // Random 10-20
+		cooldownHours: 24,                 // 24 hours before reusing
 	}
 
 	// Try to load proxy list first
@@ -106,15 +106,22 @@ func LoadProxyPool() *ProxyPool {
 		}
 	}
 
+	// Initialize usage tracking
+	for i := range pool.proxies {
+		pool.usage[i] = &ProxyUsage{}
+	}
+
 	if len(pool.proxies) > 0 {
-		log.Printf("[ProxyPool] Loaded %d proxies for rotation", len(pool.proxies))
+		log.Printf("[ProxyPool] Loaded %d proxies (rotate every %d messages, 24h cooldown)", 
+			len(pool.proxies), pool.rotateAfter)
 	}
 
 	return pool
 }
 
-// GetNext returns the next available proxy with rotation logic
-func (p *ProxyPool) GetNext() *ProxyConfig {
+// GetProxyForMessage returns the best available proxy for sending a message
+// Rotates proxy every 10-20 messages and respects 24h cooldown
+func (p *ProxyPool) GetProxyForMessage() *ProxyConfig {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -123,260 +130,119 @@ func (p *ProxyPool) GetNext() *ProxyConfig {
 	}
 
 	if len(p.proxies) == 1 {
+		p.usage[0].MessageCount++
+		p.usage[0].LastUsed = time.Now()
 		return p.proxies[0]
 	}
 
-	// Find a proxy that hasn't hit the limit and isn't in cooldown
 	now := time.Now()
 	cooldownDuration := time.Duration(p.cooldownHours) * time.Hour
 
-	for attempts := 0; attempts < len(p.proxies)*2; attempts++ {
-		idx := (p.currentIndex + attempts) % len(p.proxies)
+	// Find best available proxy
+	bestIdx := -1
+	bestScore := -1
 
-		// Check cooldown
-		if lastUsed, ok := p.lastUsed[idx]; ok {
-			if now.Sub(lastUsed) < cooldownDuration && p.useCount[idx] >= p.maxPerProxy {
-				continue // Skip, still in cooldown
-			}
-		}
-
-		// Check usage limit
-		if p.useCount[idx] >= p.maxPerProxy {
-			// Reset if cooldown passed
-			if lastUsed, ok := p.lastUsed[idx]; ok {
-				if now.Sub(lastUsed) >= cooldownDuration {
-					p.useCount[idx] = 0
-				} else {
-					continue
-				}
-			}
-		}
-
-		// Use this proxy
-		p.currentIndex = (idx + 1) % len(p.proxies)
-		p.useCount[idx]++
-		p.lastUsed[idx] = now
-
-		log.Printf("[ProxyPool] Using proxy %d/%d (used %d times): %s",
-			idx+1, len(p.proxies), p.useCount[idx], p.proxies[idx].String())
-
-		return p.proxies[idx]
-	}
-
-	// Fallback: reset all and use first
-	p.useCount = make(map[int]int)
-	p.useCount[0] = 1
-	p.lastUsed[0] = now
-	p.currentIndex = 1
-	return p.proxies[0]
-}
-
-// GetRandom returns a random proxy (for new connections)
-func (p *ProxyPool) GetRandom() *ProxyConfig {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if len(p.proxies) == 0 {
-		return &ProxyConfig{Enabled: false}
-	}
-
-	if len(p.proxies) == 1 {
-		return p.proxies[0]
-	}
-
-	idx := rand.Intn(len(p.proxies))
-	return p.proxies[idx]
-}
-
-// AssignProxyToPhone assigns a dedicated proxy to a phone number
-// If already assigned, returns the existing proxy
-// If not assigned, finds the least-used proxy and assigns it
-func (p *ProxyPool) AssignProxyToPhone(phone string) *ProxyConfig {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if len(p.proxies) == 0 {
-		return &ProxyConfig{Enabled: false}
-	}
-
-	// Check if already assigned
-	if proxyURL, exists := p.assignments[phone]; exists {
-		// Find and return the assigned proxy
-		for _, proxy := range p.proxies {
-			if proxy.GetURL() == proxyURL {
-				log.Printf("[ProxyPool] Phone %s already assigned to proxy: %s", phone, proxy.String())
-				return proxy
-			}
-		}
-		// Assigned proxy no longer exists, reassign
-		delete(p.assignments, phone)
-	}
-
-	// Find the least-used proxy
-	usageCounts := make(map[int]int)
-	for _, assignedURL := range p.assignments {
-		for i, proxy := range p.proxies {
-			if proxy.GetURL() == assignedURL {
-				usageCounts[i]++
-				break
-			}
-		}
-	}
-
-	// Find proxy with minimum assignments
-	minIdx := 0
-	minCount := usageCounts[0]
 	for i := range p.proxies {
-		if usageCounts[i] < minCount {
-			minCount = usageCounts[i]
-			minIdx = i
+		usage := p.usage[i]
+		
+		// Skip blocked proxies
+		if usage.Blocked {
+			continue
+		}
+
+		// Check if in cooldown (used recently and hit rotation limit)
+		if usage.MessageCount >= p.rotateAfter {
+			timeSinceUse := now.Sub(usage.LastUsed)
+			if timeSinceUse < cooldownDuration {
+				// Still in cooldown
+				continue
+			}
+			// Cooldown passed, reset count
+			usage.MessageCount = 0
+		}
+
+		// Score: prefer proxies with fewer messages sent
+		score := p.rotateAfter - usage.MessageCount
+		if score > bestScore {
+			bestScore = score
+			bestIdx = i
 		}
 	}
 
-	// Assign this proxy to the phone
-	selectedProxy := p.proxies[minIdx]
-	p.assignments[phone] = selectedProxy.GetURL()
-
-	log.Printf("[ProxyPool] Assigned phone %s to proxy %d/%d: %s (total on this proxy: %d)",
-		phone, minIdx+1, len(p.proxies), selectedProxy.String(), usageCounts[minIdx]+1)
-
-	return selectedProxy
-}
-
-// SetAssignment sets a proxy assignment for a phone (used when loading from meta)
-func (p *ProxyPool) SetAssignment(phone, proxyURL string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.assignments[phone] = proxyURL
-	log.Printf("[ProxyPool] Restored assignment: %s -> %s", phone, proxyURL[:min(50, len(proxyURL))]+"...")
-}
-
-// GetAssignment returns the assigned proxy URL for a phone
-func (p *ProxyPool) GetAssignment(phone string) string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.assignments[phone]
-}
-
-// RemoveAssignment removes a proxy assignment (when account is removed)
-func (p *ProxyPool) RemoveAssignment(phone string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	delete(p.assignments, phone)
-	log.Printf("[ProxyPool] Removed assignment for phone: %s", phone)
-}
-
-// ReassignProxy assigns a new proxy to a phone (when current proxy fails)
-func (p *ProxyPool) ReassignProxy(phone string) *ProxyConfig {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if len(p.proxies) <= 1 {
-		// Only one proxy available, can't reassign
-		if len(p.proxies) == 1 {
-			return p.proxies[0]
-		}
-		return &ProxyConfig{Enabled: false}
-	}
-
-	// Get current assignment
-	currentURL := p.assignments[phone]
-
-	// Find a different proxy
-	usageCounts := make(map[int]int)
-	for _, assignedURL := range p.assignments {
-		for i, proxy := range p.proxies {
-			if proxy.GetURL() == assignedURL {
-				usageCounts[i]++
-				break
+	// If no proxy available, reset the oldest one
+	if bestIdx == -1 {
+		oldestIdx := 0
+		oldestTime := now
+		for i, usage := range p.usage {
+			if !usage.Blocked && usage.LastUsed.Before(oldestTime) {
+				oldestTime = usage.LastUsed
+				oldestIdx = i
 			}
 		}
+		bestIdx = oldestIdx
+		p.usage[bestIdx].MessageCount = 0
+		log.Printf("[ProxyPool] All proxies in cooldown, reset proxy %d", bestIdx)
 	}
 
-	// Find least-used proxy that's different from current
-	minIdx := -1
-	minCount := 999999
-	for i, proxy := range p.proxies {
-		if proxy.GetURL() != currentURL && usageCounts[i] < minCount {
-			minCount = usageCounts[i]
-			minIdx = i
-		}
+	// Use this proxy
+	p.usage[bestIdx].MessageCount++
+	p.usage[bestIdx].LastUsed = now
+	p.currentIndex = bestIdx
+
+	log.Printf("[ProxyPool] Using proxy %d/%d (msg %d/%d): %s",
+		bestIdx+1, len(p.proxies), 
+		p.usage[bestIdx].MessageCount, p.rotateAfter,
+		p.proxies[bestIdx].String())
+
+	// Check if we should rotate after this message
+	if p.usage[bestIdx].MessageCount >= p.rotateAfter {
+		// Set new random rotation point for next proxy
+		p.rotateAfter = 10 + rand.Intn(11) // 10-20
+		log.Printf("[ProxyPool] Proxy %d reached limit, will rotate (next limit: %d)", bestIdx, p.rotateAfter)
 	}
 
-	if minIdx == -1 {
-		// All proxies are the same (shouldn't happen), use first different one
-		for i, proxy := range p.proxies {
-			if proxy.GetURL() != currentURL {
-				minIdx = i
-				break
-			}
-		}
-	}
-
-	if minIdx == -1 {
-		// Fallback to first proxy
-		minIdx = 0
-	}
-
-	selectedProxy := p.proxies[minIdx]
-	p.assignments[phone] = selectedProxy.GetURL()
-
-	log.Printf("[ProxyPool] REASSIGNED phone %s to new proxy %d/%d: %s",
-		phone, minIdx+1, len(p.proxies), selectedProxy.String())
-
-	return selectedProxy
+	return p.proxies[bestIdx]
 }
 
-// GetAssignmentStats returns statistics about proxy assignments
-func (p *ProxyPool) GetAssignmentStats() map[string]interface{} {
+// ShouldRotate returns true if current proxy should be rotated
+func (p *ProxyPool) ShouldRotate() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Count assignments per proxy
-	proxyStats := make([]map[string]interface{}, len(p.proxies))
-	for i, proxy := range p.proxies {
-		count := 0
-		phones := []string{}
-		for phone, url := range p.assignments {
-			if url == proxy.GetURL() {
-				count++
-				phones = append(phones, phone)
-			}
-		}
-		proxyStats[i] = map[string]interface{}{
-			"index":           i,
-			"proxy":           proxy.String(),
-			"assigned_count":  count,
-			"assigned_phones": phones,
-		}
+	if p.currentIndex < 0 || p.currentIndex >= len(p.proxies) {
+		return false
 	}
 
-	return map[string]interface{}{
-		"total_proxies":     len(p.proxies),
-		"total_assignments": len(p.assignments),
-		"proxies":           proxyStats,
-	}
+	return p.usage[p.currentIndex].MessageCount >= p.rotateAfter
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// RecordUsage records that a proxy was used for a message
-func (p *ProxyPool) RecordUsage(proxy *ProxyConfig) {
+// MarkBlocked marks a proxy as blocked (failed too many times)
+func (p *ProxyPool) MarkBlocked(proxyIdx int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	for i, px := range p.proxies {
-		if px.Host == proxy.Host && px.Port == proxy.Port {
-			p.useCount[i]++
-			p.lastUsed[i] = time.Now()
-			break
-		}
+	if proxyIdx >= 0 && proxyIdx < len(p.proxies) {
+		p.usage[proxyIdx].Blocked = true
+		log.Printf("[ProxyPool] Proxy %d marked as BLOCKED", proxyIdx)
 	}
+}
+
+// UnblockAll unblocks all proxies (for recovery)
+func (p *ProxyPool) UnblockAll() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for i := range p.usage {
+		p.usage[i].Blocked = false
+	}
+	log.Printf("[ProxyPool] All proxies unblocked")
+}
+
+// GetCurrentIndex returns the current proxy index
+func (p *ProxyPool) GetCurrentIndex() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.currentIndex
 }
 
 // GetStats returns proxy pool statistics
@@ -386,19 +252,24 @@ func (p *ProxyPool) GetStats() map[string]interface{} {
 
 	stats := make([]map[string]interface{}, len(p.proxies))
 	for i, proxy := range p.proxies {
+		usage := p.usage[i]
 		stats[i] = map[string]interface{}{
-			"index":     i,
-			"host":      proxy.Host,
-			"port":      proxy.Port,
-			"use_count": p.useCount[i],
-			"last_used": p.lastUsed[i],
+			"index":         i,
+			"host":          proxy.Host,
+			"port":          proxy.Port,
+			"message_count": usage.MessageCount,
+			"last_used":     usage.LastUsed,
+			"blocked":       usage.Blocked,
+			"rotate_after":  p.rotateAfter,
 		}
 	}
 
 	return map[string]interface{}{
+		"mode":           "rotation",
+		"description":    "Rotates proxy every 10-20 messages with 24h cooldown",
 		"total_proxies":  len(p.proxies),
 		"current_index":  p.currentIndex,
-		"max_per_proxy":  p.maxPerProxy,
+		"rotate_after":   p.rotateAfter,
 		"cooldown_hours": p.cooldownHours,
 		"proxies":        stats,
 	}
