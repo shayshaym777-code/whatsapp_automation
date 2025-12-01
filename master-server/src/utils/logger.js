@@ -7,10 +7,10 @@ const customFormat = winston.format.printf(({ level, message, timestamp, ...rest
     if (typeof message === 'object') {
         msg = JSON.stringify(message, null, 2);
     }
-    
+
     // Add any additional fields
     const extra = Object.keys(rest).length ? ` ${JSON.stringify(rest)}` : '';
-    
+
     return `${timestamp} [${level}]: ${msg}${extra}`;
 });
 

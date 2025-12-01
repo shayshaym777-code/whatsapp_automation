@@ -105,13 +105,15 @@ function Dashboard() {
     // Calculate sending rate based on actual delays and limits
     const calculateSendingRate = () => {
         // Stage configuration with realistic delays
+        // msgsPerHour = calculated from average delay: 3600 / avgDelay
+        // But capped by daily limit spread over ~8 active hours
         const stageConfig = {
-            'New Born': { maxDay: 5, delayMin: 30, delayMax: 60, msgsPerHour: 1 },
-            'Baby': { maxDay: 15, delayMin: 20, delayMax: 40, msgsPerHour: 3 },
-            'Toddler': { maxDay: 30, delayMin: 10, delayMax: 20, msgsPerHour: 6 },
-            'Teen': { maxDay: 50, delayMin: 5, delayMax: 10, msgsPerHour: 10 },
-            'Adult': { maxDay: 100, delayMin: 3, delayMax: 7, msgsPerHour: 20 },
-            'Veteran': { maxDay: 200, delayMin: 1, delayMax: 5, msgsPerHour: 40 },
+            'New Born': { maxDay: 5, delayMin: 30, delayMax: 60, msgsPerHour: 2 },      // 5/day ÷ 3hr active = ~2/hr
+            'Baby': { maxDay: 15, delayMin: 20, delayMax: 40, msgsPerHour: 5 },         // 15/day ÷ 3hr = 5/hr
+            'Toddler': { maxDay: 30, delayMin: 10, delayMax: 20, msgsPerHour: 10 },     // 30/day ÷ 3hr = 10/hr
+            'Teen': { maxDay: 50, delayMin: 5, delayMax: 10, msgsPerHour: 17 },         // 50/day ÷ 3hr = 17/hr
+            'Adult': { maxDay: 100, delayMin: 3, delayMax: 7, msgsPerHour: 33 },        // 100/day ÷ 3hr = 33/hr
+            'Veteran': { maxDay: 200, delayMin: 1, delayMax: 5, msgsPerHour: 67 },      // 200/day ÷ 3hr = 67/hr
         }
 
         let totalMessagesPerDay = 0
@@ -359,12 +361,12 @@ function Dashboard() {
                     <h4 className="text-sm font-medium text-gray-400 mb-3">Breakdown by Stage (with delays)</h4>
                     <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
                         {[
-                            { stage: 'New Born', emoji: '🐣', limit: 5, rate: 1, delay: '30-60s' },
-                            { stage: 'Baby', emoji: '👶', limit: 15, rate: 3, delay: '20-40s' },
-                            { stage: 'Toddler', emoji: '🧒', limit: 30, rate: 6, delay: '10-20s' },
-                            { stage: 'Teen', emoji: '👦', limit: 50, rate: 10, delay: '5-10s' },
-                            { stage: 'Adult', emoji: '🧑', limit: 100, rate: 20, delay: '3-7s' },
-                            { stage: 'Veteran', emoji: '🎖️', limit: 200, rate: 40, delay: '1-5s' },
+                            { stage: 'New Born', emoji: '🐣', limit: 5, rate: 2, delay: '30-60s' },
+                            { stage: 'Baby', emoji: '👶', limit: 15, rate: 5, delay: '20-40s' },
+                            { stage: 'Toddler', emoji: '🧒', limit: 30, rate: 10, delay: '10-20s' },
+                            { stage: 'Teen', emoji: '👦', limit: 50, rate: 17, delay: '5-10s' },
+                            { stage: 'Adult', emoji: '🧑', limit: 100, rate: 33, delay: '3-7s' },
+                            { stage: 'Veteran', emoji: '🎖️', limit: 200, rate: 67, delay: '1-5s' },
                         ].map(({ stage, emoji, limit, rate, delay }) => {
                             const count = sendingRate.accountBreakdown.filter(a => a.stage === stage).length
                             return (
