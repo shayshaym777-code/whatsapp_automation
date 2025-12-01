@@ -581,4 +581,125 @@ router.post('/can-send', async (req, res, next) => {
     }
 });
 
+// ============================================
+// SYSTEM ALERTS - Get all system alerts
+// ============================================
+
+router.get('/alerts', async (req, res, next) => {
+    try {
+        const alerts = [];
+        
+        // Check accounts
+        let accounts = [];
+        try {
+            accounts = await loadBalancer.fetchActiveAccounts();
+        } catch (e) {
+            alerts.push({
+                type: 'error',
+                code: 'WORKERS_OFFLINE',
+                title: '🔴 Workers לא מגיבים',
+                message: 'לא ניתן להתחבר ל-Workers. בדוק שהם רצים.',
+                priority: 1
+            });
+        }
+
+        // No accounts
+        if (accounts.length === 0) {
+            alerts.push({
+                type: 'error',
+                code: 'NO_ACCOUNTS',
+                title: '🔴 אין חשבונות מחוברים',
+                message: 'צריך לחבר לפחות חשבון אחד כדי לשלוח הודעות.',
+                priority: 1
+            });
+        }
+
+        // Check for new/weak accounts (slow sending)
+        const newBornCount = accounts.filter(a => a.stage === 'new_born').length;
+        const babyCount = accounts.filter(a => a.stage === 'baby').length;
+        const weakAccountsCount = newBornCount + babyCount;
+        
+        if (weakAccountsCount > 0 && weakAccountsCount === accounts.length) {
+            alerts.push({
+                type: 'warning',
+                code: 'SLOW_SENDING',
+                title: '🐢 שליחה איטית',
+                message: `כל ${accounts.length} החשבונות בשלב חימום (${newBornCount} new_born, ${babyCount} baby). השליחה תהיה איטית מאוד!`,
+                priority: 2,
+                details: {
+                    new_born: newBornCount,
+                    baby: babyCount,
+                    estimated_daily: newBornCount * 5 + babyCount * 15
+                }
+            });
+        } else if (weakAccountsCount > accounts.length / 2) {
+            alerts.push({
+                type: 'warning',
+                code: 'MOSTLY_SLOW',
+                title: '⚠️ רוב החשבונות איטיים',
+                message: `${weakAccountsCount} מתוך ${accounts.length} חשבונות בשלב חימום. השליחה עלולה להיות איטית.`,
+                priority: 3
+            });
+        }
+
+        // Calculate total capacity
+        let totalCapacity = 0;
+        for (const acc of accounts) {
+            const limits = {
+                'new_born': 5, 'baby': 15, 'toddler': 30,
+                'teen': 50, 'adult': 100, 'veteran': 200
+            };
+            totalCapacity += limits[acc.stage] || 100;
+        }
+
+        // Low capacity warning
+        if (totalCapacity < 50 && accounts.length > 0) {
+            alerts.push({
+                type: 'warning',
+                code: 'LOW_CAPACITY',
+                title: '📉 קיבולת נמוכה',
+                message: `קיבולת יומית: ${totalCapacity} הודעות בלבד. שקול להוסיף חשבונות.`,
+                priority: 3,
+                details: { daily_capacity: totalCapacity }
+            });
+        }
+
+        // Stage distribution
+        const stageDistribution = {};
+        for (const acc of accounts) {
+            stageDistribution[acc.stage] = (stageDistribution[acc.stage] || 0) + 1;
+        }
+
+        // Sort alerts by priority
+        alerts.sort((a, b) => a.priority - b.priority);
+
+        return res.status(200).json({
+            success: true,
+            has_alerts: alerts.length > 0,
+            alert_count: alerts.length,
+            alerts: alerts,
+            summary: {
+                total_accounts: accounts.length,
+                stage_distribution: stageDistribution,
+                daily_capacity: totalCapacity,
+                is_healthy: alerts.filter(a => a.type === 'error').length === 0
+            }
+        });
+    } catch (err) {
+        logger.error(`Alerts check error: ${err.message}`);
+        return res.status(200).json({
+            success: false,
+            has_alerts: true,
+            alert_count: 1,
+            alerts: [{
+                type: 'error',
+                code: 'SYSTEM_ERROR',
+                title: '🔴 שגיאת מערכת',
+                message: err.message,
+                priority: 1
+            }]
+        });
+    }
+});
+
 module.exports = router;

@@ -899,29 +899,15 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 		return nil, fmt.Errorf("account %s not logged in", fromPhone)
 	}
 
-	// === LIMIT CHECK: Enforce daily and hourly limits ===
-	// First, reset counters if needed
+	// === TRACKING: Update counters (no hard limits - just tracking) ===
 	m.resetCountersIfNeeded(acc)
 
 	acc.mu.RLock()
 	stage := acc.WarmupStage
-	todayCount := acc.TotalMsgToday
-	hourCount := acc.HourMsgCount
+	if stage == "" {
+		stage = "adult" // Default stage
+	}
 	acc.mu.RUnlock()
-
-	limits := getStageLimits(stage)
-
-	// Check daily limit
-	if todayCount >= limits.MaxDay {
-		return nil, fmt.Errorf("daily limit reached for %s: %d/%d (stage: %s)",
-			fromPhone, todayCount, limits.MaxDay, stage)
-	}
-
-	// Check hourly limit
-	if hourCount >= limits.MaxHour {
-		return nil, fmt.Errorf("hourly limit reached for %s: %d/%d (stage: %s)",
-			fromPhone, hourCount, limits.MaxHour, stage)
-	}
 
 	// Parse recipient JID
 	recipientJID, err := parseJID(toPhone)
