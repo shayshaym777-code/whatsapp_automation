@@ -211,21 +211,21 @@ function Accounts() {
 function getHealthStatus(account) {
     if (!account.connected) return 'DISCONNECTED'
     if (!account.logged_in) return 'DISCONNECTED'
-    
+
     // Check for block indicators
     if (account.last_error) {
         const err = account.last_error.toLowerCase()
-        if (err.includes('banned') || err.includes('blocked') || 
+        if (err.includes('banned') || err.includes('blocked') ||
             err.includes('restricted') || err.includes('unusual')) {
             return 'BLOCKED'
         }
     }
-    
+
     // Check for suspicious activity (no messages delivered recently)
     if (account.consecutive_failures > 3) {
         return 'SUSPICIOUS'
     }
-    
+
     return 'HEALTHY'
 }
 
@@ -233,12 +233,12 @@ function getHealthStatus(account) {
 function getStageInfo(account) {
     const ageHours = account.account_age_hours || 0
     const ageDays = ageHours / 24
-    
+
     if (account.warmup_complete) {
         if (ageDays >= 60) return { name: 'Veteran', emoji: '🎖️', limit: 200 }
         return { name: 'Adult', emoji: '🧑', limit: 100 }
     }
-    
+
     if (ageDays <= 3) return { name: 'New Born', emoji: '🐣', limit: 5 }
     if (ageDays <= 7) return { name: 'Baby', emoji: '👶', limit: 15 }
     if (ageDays <= 14) return { name: 'Toddler', emoji: '🧒', limit: 30 }
@@ -252,21 +252,21 @@ function DetailedAccountCard({ account, onReconnect, onSkipWarmup, onToggleWarmu
     const stageInfo = getStageInfo(account)
     const isWarmup = !account.warmup_complete && account.connected && account.logged_in
     const isVeteran = account.warmup_complete || account.is_veteran
-    
+
     const ageHours = account.account_age_hours || 0
     const ageDays = Math.floor(ageHours / 24)
-    
+
     // Calculate time since last alive
     const lastAlive = account.last_warmup_sent ? new Date(account.last_warmup_sent) : null
     const timeSinceAlive = lastAlive ? Math.round((Date.now() - lastAlive) / 60000) : null
-    
+
     const statusConfig = {
         HEALTHY: { color: 'green', icon: '🟢', label: 'Healthy' },
         BLOCKED: { color: 'red', icon: '🔴', label: 'BLOCKED!' },
         SUSPICIOUS: { color: 'yellow', icon: '🟠', label: 'Suspicious' },
         DISCONNECTED: { color: 'yellow', icon: '🟡', label: 'Disconnected' }
     }
-    
+
     const status = statusConfig[healthStatus]
 
     return (
@@ -312,8 +312,8 @@ function DetailedAccountCard({ account, onReconnect, onSkipWarmup, onToggleWarmu
                 <div className="flex justify-between text-sm">
                     <span className="text-gray-400">Last Alive</span>
                     <span className="text-gray-300">
-                        {timeSinceAlive !== null 
-                            ? timeSinceAlive < 60 
+                        {timeSinceAlive !== null
+                            ? timeSinceAlive < 60
                                 ? `${timeSinceAlive} min ago`
                                 : `${Math.round(timeSinceAlive / 60)} hours ago`
                             : 'Unknown'}
@@ -368,7 +368,7 @@ function DetailedAccountCard({ account, onReconnect, onSkipWarmup, onToggleWarmu
                         📤 Send Message
                     </Link>
                 )}
-                
+
                 {/* Warmup Toggle Button */}
                 {healthStatus === 'HEALTHY' && (
                     isVeteran ? (
@@ -391,7 +391,7 @@ function DetailedAccountCard({ account, onReconnect, onSkipWarmup, onToggleWarmu
                         </button>
                     )
                 )}
-                
+
                 {healthStatus === 'DISCONNECTED' && (
                     <button
                         onClick={onReconnect}
@@ -401,13 +401,13 @@ function DetailedAccountCard({ account, onReconnect, onSkipWarmup, onToggleWarmu
                         🔄 Reconnect
                     </button>
                 )}
-                
+
                 {healthStatus === 'SUSPICIOUS' && (
                     <div className="flex-1 py-2 px-3 bg-yellow-500/10 text-yellow-400 rounded-lg text-sm text-center">
                         ⚠️ Needs Attention
                     </div>
                 )}
-                
+
                 {healthStatus === 'BLOCKED' && (
                     <div className="flex-1 py-2 px-3 bg-red-500/10 text-red-400 rounded-lg text-sm text-center">
                         🔴 Account Blocked

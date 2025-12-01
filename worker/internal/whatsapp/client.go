@@ -98,15 +98,15 @@ type AccountClient struct {
 	BannedUntil         time.Time // If temp banned, when it expires
 
 	// Disconnect tracking - to detect unstable accounts
-	DisconnectCount     int       // Number of disconnects today
-	LastDisconnect      time.Time // Last disconnect time
+	DisconnectCount      int       // Number of disconnects today
+	LastDisconnect       time.Time // Last disconnect time
 	DisconnectCountReset time.Time // When disconnect count was last reset
-	IsUnstable          bool      // True if account is unstable (many disconnects)
+	IsUnstable           bool      // True if account is unstable (many disconnects)
 
 	// Delivery Rate tracking
-	MessagesSent     int // Messages sent today
+	MessagesSent      int // Messages sent today
 	MessagesDelivered int // Messages delivered (got receipt)
-	MessagesFailed   int // Messages that failed
+	MessagesFailed    int // Messages that failed
 
 	// Mutex for thread-safe access
 	mu sync.RWMutex
@@ -709,7 +709,7 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 		acc.Connected = false
 		acc.lastConnectedState = false
 		acc.lastStateChange = time.Now()
-		
+
 		// Track disconnects to detect unstable accounts
 		today := time.Now().Format("2006-01-02")
 		resetDay := acc.DisconnectCountReset.Format("2006-01-02")
@@ -720,7 +720,7 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 		}
 		acc.DisconnectCount++
 		acc.LastDisconnect = time.Now()
-		
+
 		// Mark as unstable if too many disconnects (more than 10 per day)
 		if acc.DisconnectCount > 10 {
 			if !acc.IsUnstable {
@@ -728,7 +728,7 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 			}
 			acc.IsUnstable = true
 		}
-		
+
 		m.mu.Unlock()
 
 		// Update health
@@ -807,7 +807,7 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 			acc.mu.Lock()
 			acc.MessagesDelivered++
 			acc.mu.Unlock()
-			
+
 			// Update health - message was delivered
 			if health := m.GetAccountHealth(phone); health != nil {
 				health.LastAlive = time.Now()
@@ -1055,7 +1055,7 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 		acc.MessagesFailed++
 		acc.MessagesSent++
 		acc.mu.Unlock()
-		
+
 		// Check if this might be a proxy failure
 		if isProxyError(err) {
 			log.Printf("[%s] Proxy error detected, will rotate on next message", fromPhone)
@@ -1857,13 +1857,13 @@ func (m *ClientManager) GetAccountStats() []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(m.accounts))
 	for _, acc := range m.accounts {
 		acc.mu.RLock()
-		
+
 		// Calculate delivery rate
 		deliveryRate := 100.0
 		if acc.MessagesSent > 0 {
 			deliveryRate = float64(acc.MessagesDelivered) / float64(acc.MessagesSent) * 100
 		}
-		
+
 		result = append(result, map[string]interface{}{
 			"phone":              acc.Phone,
 			"logged_in":          acc.LoggedIn,
@@ -1955,18 +1955,18 @@ func (m *ClientManager) GetAccountsCapacity() []map[string]interface{} {
 			}
 		} else {
 			// Veteran accounts have no daily limit
-			dailyLimit = -1 // -1 means unlimited
+			dailyLimit = -1  // -1 means unlimited
 			available = 9999 // Effectively unlimited
 		}
 
 		result = append(result, map[string]interface{}{
-			"phone":        phone,
-			"connected":    acc.Connected && acc.LoggedIn,
-			"in_warmup":    acc.IsInWarmup,
-			"stage":        acc.WarmupStage,
-			"daily_limit":  dailyLimit,
-			"sent_today":   acc.TotalMsgToday,
-			"available":    available,
+			"phone":       phone,
+			"connected":   acc.Connected && acc.LoggedIn,
+			"in_warmup":   acc.IsInWarmup,
+			"stage":       acc.WarmupStage,
+			"daily_limit": dailyLimit,
+			"sent_today":  acc.TotalMsgToday,
+			"available":   available,
 		})
 		acc.mu.RUnlock()
 	}
