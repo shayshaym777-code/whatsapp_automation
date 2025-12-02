@@ -94,30 +94,85 @@ class QueueProcessor {
 
             let sentCount = 0;
             let failedCount = 0;
+            let retryCount = 0;
 
             for (const contact of contacts) {
-                // Find best sender for this contact
-                const sender = await this.findBestSender(contact.recipient_phone, availableSenders);
+                let messageSent = false;
+                let attempts = 0;
+                const maxImmediateRetries = 2; // Try up to 2 times immediately
 
-                if (!sender) {
-                    continue; // No sender available for this contact
+                // Try to send with immediate retries
+                while (!messageSent && attempts < maxImmediateRetries) {
+                    attempts++;
+                    
+                    // Find best sender for this contact
+                    const sender = await this.findBestSender(contact.recipient_phone, availableSenders);
+
+                    if (!sender) {
+                        break; // No sender available - will retry in next batch
+                    }
+
+                    // Send message
+                    const success = await this.sendMessage(sender, contact);
+
+                    if (success) {
+                        sentCount++;
+                        messageSent = true;
+                        // Update sender availability
+                        await this.updateSenderAfterSend(sender.phone);
+                    } else {
+                        // Check if message was reset to pending for retry
+                        const checkStatus = await query(`
+                            SELECT status, retry_count FROM message_queue WHERE id = $1
+                        `, [contact.id]);
+                        
+                        const status = checkStatus.rows[0]?.status;
+                        
+                        if (status === 'pending' && attempts < maxImmediateRetries) {
+                            // Message was reset to pending - try again immediately
+                            logger.info(`[QueueProcessor] 🔄 Immediate retry ${attempts}/${maxImmediateRetries} for ${contact.recipient_phone}`);
+                            // Small delay before retry (1-2 seconds)
+                            await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000));
+                            // Refresh contact data (retry_count might have changed)
+                            const refreshedContact = await query(`
+                                SELECT id, recipient_phone, recipient_name, message_template, priority, campaign_id
+                                FROM message_queue WHERE id = $1
+                            `, [contact.id]);
+                            if (refreshedContact.rows.length > 0) {
+                                Object.assign(contact, refreshedContact.rows[0]);
+                            }
+                        } else if (status === 'failed') {
+                            // Message failed permanently
+                            failedCount++;
+                            break;
+                        } else if (status === 'pending') {
+                            // Will retry in next batch
+                            retryCount++;
+                            break;
+                        }
+                    }
                 }
 
-                // Send message
-                const success = await this.sendMessage(sender, contact);
-
-                if (success) {
-                    sentCount++;
-                    // Update sender availability
-                    await this.updateSenderAfterSend(sender.phone);
-                } else {
-                    failedCount++;
+                // If still not sent after immediate retries, it will be retried in next batch
+                if (!messageSent && attempts >= maxImmediateRetries) {
+                    const checkStatus = await query(`
+                        SELECT status FROM message_queue WHERE id = $1
+                    `, [contact.id]);
+                    
+                    if (checkStatus.rows[0]?.status === 'pending') {
+                        retryCount++;
+                    } else if (checkStatus.rows[0]?.status === 'failed') {
+                        failedCount++;
+                    }
                 }
             }
 
             // Log batch completion
-            if (sentCount > 0 || failedCount > 0) {
-                logger.info(`[QueueProcessor] 📊 Batch: ${sentCount} sent, ${failedCount} failed`);
+            if (sentCount > 0 || failedCount > 0 || retryCount > 0) {
+                let logMsg = `[QueueProcessor] 📊 Batch: ${sentCount} sent`;
+                if (failedCount > 0) logMsg += `, ${failedCount} failed`;
+                if (retryCount > 0) logMsg += `, ${retryCount} will retry`;
+                logger.info(logMsg);
             }
 
             // Check if campaign is complete
@@ -479,7 +534,7 @@ class QueueProcessor {
 
             // Check if this is a permanent failure (blocked account) or temporary
             const isPermanentFailure = errorMsg.includes('blocked') || errorMsg.includes('banned') || errorMsg.includes('restricted');
-            
+
             if (isPermanentFailure) {
                 // Permanent failure - mark as failed
                 await query(`
@@ -493,10 +548,10 @@ class QueueProcessor {
                 const retryResult = await query(`
                     SELECT retry_count FROM message_queue WHERE id = $1
                 `, [contact.id]);
-                
+
                 const currentRetryCount = retryResult.rows[0]?.retry_count || 0;
                 const newRetryCount = currentRetryCount + 1;
-                
+
                 if (newRetryCount < 3) {
                     // Retry - reset to pending (will be retried in next batch)
                     await query(`
@@ -589,7 +644,7 @@ class QueueProcessor {
 
                 // Send Telegram alert
                 let telegramMessage = `✅ Campaign ${campaign.id} completed!\nSent: ${campaign.sent}/${campaign.total} (${successRate}%)\nFailed: ${campaign.failed}`;
-                
+
                 if (failedPhones.rows.length > 0 && failedPhones.rows.length <= 20) {
                     // Include failed numbers if not too many
                     const failedNumbers = failedPhones.rows.map(r => r.recipient_phone).join(', ');
