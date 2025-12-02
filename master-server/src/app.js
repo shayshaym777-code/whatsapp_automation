@@ -9,6 +9,7 @@ const sendRouter = require('./api/routes/send');
 const campaignsRouter = require('./api/routes/campaigns');
 const { query } = require('./config/database');
 const { apiKeyAuth } = require('./middleware/auth');
+const { requestLogger } = require('./middleware/requestLogger');
 
 dotenv.config();
 
@@ -19,6 +20,9 @@ const app = express();
 app.use(helmet());
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+
+// Request logging middleware (logs all API requests)
+app.use(requestLogger);
 
 // Health check (no auth required)
 app.get('/health', (req, res) => {

@@ -1,0 +1,35 @@
+# ============================================
+# פקודות לבדיקת לוגים של API
+# העתק והדבק בשרת
+# ============================================
+
+# 1. לוגים של Master Server (API) - לראות כל הבקשות
+docker compose logs -f master
+
+# 2. לוגים רק של בקשות API (פילטר)
+docker compose logs -f master | grep -E "(POST|GET|PUT|DELETE|/api/)"
+
+# 3. לוגים של שגיאות בלבד
+docker compose logs -f master | grep -E "(error|Error|401|403|500|failed|Failed)"
+
+# 4. לוגים של בקשות שנדחו (401/403)
+docker compose logs -f master | grep -E "(401|403|Invalid API key|API key required)"
+
+# 5. לוגים של בקשות שהצליחו
+docker compose logs -f master | grep -E "(200|success|Success|Campaign)"
+
+# 6. לוגים אחרונים (100 שורות)
+docker compose logs --tail=100 master
+
+# 7. לוגים של שעה אחרונה
+docker compose logs --since 1h master
+
+# 8. לוגים של כל השירותים ביחד
+docker compose logs -f
+
+# 9. לוגים של Worker 1 (ישראל)
+docker compose logs -f worker-1
+
+# 10. לוגים של Worker 2 (ארה"ב)
+docker compose logs -f worker-2
+
