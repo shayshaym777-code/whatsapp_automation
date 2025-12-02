@@ -83,7 +83,9 @@ class QueueProcessor {
             logger.info(`[QueueProcessor] 📤 Processing ${pendingCount} messages (${uniqueContacts} contacts: ${contactsWithChat} existing, ${newContacts} new) with ${availableSenders.length} senders`);
 
             // Sort contacts by priority (existing chats first)
-            const contacts = await this.getContactsByPriority();
+            // Take up to availableSenders.length * 2 contacts to maximize parallel sending
+            const batchSize = Math.min(availableSenders.length * 2, 50); // Max 50 per batch
+            const contacts = await this.getContactsByPriority(batchSize);
 
             if (contacts.length === 0) {
                 this.isProcessing = false;
@@ -182,7 +184,7 @@ class QueueProcessor {
     }
 
     // Get contacts sorted by priority (existing chats first)
-    async getContactsByPriority() {
+    async getContactsByPriority(limit = 50) {
         try {
             const result = await query(`
                 SELECT 
@@ -200,8 +202,8 @@ class QueueProcessor {
                     has_existing_chat DESC,  -- Existing chats first
                     q.priority DESC,
                     q.created_at ASC
-                LIMIT 10
-            `);
+                LIMIT $1
+            `, [limit]);
             return result.rows;
         } catch (err) {
             // If table doesn't exist yet, return empty array
