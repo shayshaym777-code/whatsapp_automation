@@ -8,9 +8,9 @@ version: '3.8'
 #   - postgres: Database for accounts, messages, campaigns
 #   - redis: Message queue and caching
 #   - master: Node.js API server (port 5000)
-#   - worker-1: US accounts (+1) on port 3001
-#   - worker-2: Israel accounts (+972) on port 3002
-#   - worker-3: UK accounts (+44) on port 3003
+#   - worker-1: ISRAEL accounts (+972) on port 3001
+#   - worker-2: USA accounts (+1) on port 3002
+#   - worker-3: USA accounts (+1) on port 3003
 #   - dashboard: React web UI (port 8080)
 #
 # Setup:
@@ -134,7 +134,7 @@ services:
       - wa_network
 
   # ============================================
-  # WORKER 1 - USA Accounts (+1 phone numbers)
+  # WORKER 1 - ISRAEL Accounts (+972 phone numbers)
   # ============================================
   worker-1:
     build:
@@ -146,17 +146,17 @@ services:
     environment:
       WORKER_ID: ${WORKER_1_ID:-worker-1}
       WORKER_PORT: 3001
-      DEVICE_SEED: ${WORKER_1_SEED:-unique-seed-worker-1-usa-abc123}
-      PROXY_COUNTRY: ${WORKER_1_COUNTRY:-US}
+      DEVICE_SEED: ${WORKER_1_SEED:-unique-seed-worker-1-israel-abc123}
+      PROXY_COUNTRY: ${WORKER_1_COUNTRY:-IL}
       MASTER_URL: http://master:5000
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      # Proxy configuration - USA proxy with 7-day sticky rotation
+      # Proxy configuration - ISRAEL proxy with 7-day sticky rotation
       PROXY_HOST: ${PROXY_HOST:-geo.iproyal.com}
       PROXY_PORT: ${PROXY_PORT:-12321}
       PROXY_USER: ${PROXY_USER:-8ou9yomVguVTDM5q}
-      PROXY_PASS: ${WORKER_1_PROXY_PASS:-k5CuWpGcfNEZZX23_country-us_session-EkOwRNjU_lifetime-168h_streaming-1}
+      PROXY_PASS: ${WORKER_1_PROXY_PASS:-k5CuWpGcfNEZZX23_country-il_session-EkOwRNjU_lifetime-168h_streaming-1}
       PROXY_TYPE: ${PROXY_TYPE:-socks5}
-      # 34 US proxies with 7-day sticky sessions
+      # 50 IL proxies with 7-day sticky sessions
       PROXY_LIST: ${WORKER_1_PROXY_LIST:-}
     volumes:
       - worker1_sessions:/data/sessions
@@ -178,7 +178,7 @@ services:
       - wa_network
 
   # ============================================
-  # WORKER 2 - USA Accounts (+1 phone numbers)
+  # WORKER 2 - USA Accounts (+1 phone numbers) - American proxies
   # ============================================
   worker-2:
     build:
@@ -222,7 +222,7 @@ services:
       - wa_network
 
   # ============================================
-  # WORKER 3 - USA Accounts (+1 phone numbers)
+  # WORKER 3 - USA Accounts (+1 phone numbers) - American proxies
   # ============================================
   worker-3:
     build:
