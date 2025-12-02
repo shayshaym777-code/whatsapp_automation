@@ -223,7 +223,6 @@ class QueueProcessor {
                 const response = await axios.get(`${worker.url}/accounts`, { timeout: 5000 });
                 if (response.data && response.data.accounts) {
                     const workerAccounts = response.data.accounts.filter(acc => acc.logged_in && acc.connected);
-                    totalAccountsFromWorkers += response.data.accounts.length;
 
                     for (const acc of workerAccounts) {
                         allAccounts.push({
@@ -352,8 +351,8 @@ class QueueProcessor {
 
     // Find best sender for recipient
     async findBestSender(recipientPhone, availableSenders) {
-            // Check if any sender has existing chat with recipient
-            const existingChats = await query(`
+        // Check if any sender has existing chat with recipient
+        const existingChats = await query(`
             SELECT sender_phone, last_message_at
             FROM chat_history
             WHERE recipient_phone = $1
@@ -361,65 +360,65 @@ class QueueProcessor {
             ORDER BY last_message_at DESC
         `, [recipientPhone, availableSenders.map(s => s.phone)]);
 
-            if (existingChats.rows.length > 0) {
-                // Use sender with most recent chat
-                const senderPhone = existingChats.rows[0].sender_phone;
-                return availableSenders.find(s => s.phone === senderPhone);
-            }
-
-            // No existing chat - select by score
-            const scoredSenders = availableSenders.map(sender => ({
-                ...sender,
-                score: this.calculateSenderScore(sender)
-            }));
-
-            scoredSenders.sort((a, b) => b.score - a.score);
-            return scoredSenders[0];
+        if (existingChats.rows.length > 0) {
+            // Use sender with most recent chat
+            const senderPhone = existingChats.rows[0].sender_phone;
+            return availableSenders.find(s => s.phone === senderPhone);
         }
 
-        // Calculate sender score
-        calculateSenderScore(sender) {
-            let score = 0;
+        // No existing chat - select by score
+        const scoredSenders = availableSenders.map(sender => ({
+            ...sender,
+            score: this.calculateSenderScore(sender)
+        }));
 
-            // 1. Account age (0-30 points)
-            const accountAgeDays = sender.created_at
-                ? (Date.now() - new Date(sender.created_at)) / (1000 * 60 * 60 * 24)
-                : 0;
-            score += Math.min(accountAgeDays, 30);
+        scoredSenders.sort((a, b) => b.score - a.score);
+        return scoredSenders[0];
+    }
 
-            // 2. Total messages sent (0-20 points)
-            const totalSent = sender.total_messages_sent || 0;
-            score += Math.min(totalSent / 100, 20);
+    // Calculate sender score
+    calculateSenderScore(sender) {
+        let score = 0;
 
-            // 3. Time since last message
-            if (sender.last_message_at) {
-                const minutesSinceLastMessage = (Date.now() - new Date(sender.last_message_at)) / (1000 * 60);
-                if (minutesSinceLastMessage < 1) {
-                    score -= 10;
-                } else if (minutesSinceLastMessage < 5) {
-                    score -= 5;
-                } else if (minutesSinceLastMessage > 30) {
-                    score += 10;
-                }
+        // 1. Account age (0-30 points)
+        const accountAgeDays = sender.created_at
+            ? (Date.now() - new Date(sender.created_at)) / (1000 * 60 * 60 * 24)
+            : 0;
+        score += Math.min(accountAgeDays, 30);
+
+        // 2. Total messages sent (0-20 points)
+        const totalSent = sender.total_messages_sent || 0;
+        score += Math.min(totalSent / 100, 20);
+
+        // 3. Time since last message
+        if (sender.last_message_at) {
+            const minutesSinceLastMessage = (Date.now() - new Date(sender.last_message_at)) / (1000 * 60);
+            if (minutesSinceLastMessage < 1) {
+                score -= 10;
+            } else if (minutesSinceLastMessage < 5) {
+                score -= 5;
+            } else if (minutesSinceLastMessage > 30) {
+                score += 10;
             }
-
-            // 4. Today's load (negative)
-            // This would need messages_today field - simplified for now
-            score -= (sender.messages_last_minute || 0) * 2;
-
-            // 5. Success rate (0-20 points)
-            const totalSentForRate = sender.total_messages_sent || 1;
-            const successRate = (sender.successful_messages || 0) / totalSentForRate;
-            score += successRate * 20;
-
-            return score;
         }
+
+        // 4. Today's load (negative)
+        // This would need messages_today field - simplified for now
+        score -= (sender.messages_last_minute || 0) * 2;
+
+        // 5. Success rate (0-20 points)
+        const totalSentForRate = sender.total_messages_sent || 1;
+        const successRate = (sender.successful_messages || 0) / totalSentForRate;
+        score += successRate * 20;
+
+        return score;
+    }
 
     // Send message - returns true on success, false on failure
     async sendMessage(sender, contact) {
-            try {
-                // Mark as processing
-                await query(`
+        try {
+            // Mark as processing
+            await query(`
                 UPDATE message_queue
                 SET status = 'processing',
                     assigned_sender = $1,
@@ -427,67 +426,67 @@ class QueueProcessor {
                 WHERE id = $2
             `, [sender.phone, contact.id]);
 
-                // Send to worker
-                const response = await axios.post(`${sender.worker_url}/send`, {
-                    from_phone: sender.phone,
-                    to_phone: contact.recipient_phone,
-                    message: contact.message_template,
-                    name: contact.recipient_name || ''
-                }, { timeout: 30000 });
+            // Send to worker
+            const response = await axios.post(`${sender.worker_url}/send`, {
+                from_phone: sender.phone,
+                to_phone: contact.recipient_phone,
+                message: contact.message_template,
+                name: contact.recipient_name || ''
+            }, { timeout: 30000 });
 
-                if (response.data && response.data.success) {
-                    // Mark as sent
-                    await query(`
+            if (response.data && response.data.success) {
+                // Mark as sent
+                await query(`
                     UPDATE message_queue
                     SET status = 'sent'
                     WHERE id = $1
                 `, [contact.id]);
 
-                    // Update chat history
-                    await query(`
+                // Update chat history
+                await query(`
                     INSERT INTO chat_history (sender_phone, recipient_phone, last_message_at)
                     VALUES ($1, $2, NOW())
                     ON CONFLICT (sender_phone, recipient_phone)
                     DO UPDATE SET last_message_at = NOW()
                 `, [sender.phone, contact.recipient_phone]);
 
-                    logger.info(`[QueueProcessor] ✅ Sent from ${sender.phone} to ${contact.recipient_phone}`);
-                    return true;
-                } else {
-                    throw new Error('Worker did not confirm success');
-                }
+                logger.info(`[QueueProcessor] ✅ Sent from ${sender.phone} to ${contact.recipient_phone}`);
+                return true;
+            } else {
+                throw new Error('Worker did not confirm success');
+            }
 
-            } catch (err) {
-                const errorMsg = err.message || err.toString();
+        } catch (err) {
+            const errorMsg = err.message || err.toString();
 
-                // Check if account is blocked
-                if (errorMsg.includes('blocked') || errorMsg.includes('banned') || errorMsg.includes('restricted')) {
-                    logger.error(`[QueueProcessor] 🚨 BLOCKED: ${sender.phone} - Account blocked!`);
+            // Check if account is blocked
+            if (errorMsg.includes('blocked') || errorMsg.includes('banned') || errorMsg.includes('restricted')) {
+                logger.error(`[QueueProcessor] 🚨 BLOCKED: ${sender.phone} - Account blocked!`);
 
-                    // Mark account as blocked in DB
-                    await query(`
+                // Mark account as blocked in DB
+                await query(`
                     UPDATE accounts
                     SET blocked_at = NOW()
                     WHERE phone = $1
                 `, [sender.phone]);
-                }
+            }
 
-                logger.error(`[QueueProcessor] ❌ Failed to send ${contact.id} (${contact.recipient_phone}) from ${sender.phone}: ${errorMsg}`);
+            logger.error(`[QueueProcessor] ❌ Failed to send ${contact.id} (${contact.recipient_phone}) from ${sender.phone}: ${errorMsg}`);
 
-                // Mark as failed
-                await query(`
+            // Mark as failed
+            await query(`
                 UPDATE message_queue
                 SET status = 'failed'
                 WHERE id = $1
             `, [contact.id]);
 
-                return false;
-            }
+            return false;
         }
+    }
 
     // Update sender after sending
     async updateSenderAfterSend(senderPhone) {
-            await query(`
+        await query(`
             UPDATE accounts
             SET 
                 messages_last_minute = messages_last_minute + 1,
@@ -497,12 +496,12 @@ class QueueProcessor {
                 last_message_at = NOW()
             WHERE phone = $1
         `, [senderPhone]);
-        }
+    }
 
     // Check and log campaign completion
     async checkCampaignCompletion() {
-            try {
-                const campaigns = await query(`
+        try {
+            const campaigns = await query(`
                 SELECT 
                     c.id,
                     c.total,
@@ -516,32 +515,32 @@ class QueueProcessor {
                 HAVING COUNT(CASE WHEN q.status IN ('pending', 'processing') THEN 1 END) = 0
             `);
 
-                for (const campaign of campaigns.rows) {
-                    // Mark campaign as completed
-                    await query(`
+            for (const campaign of campaigns.rows) {
+                // Mark campaign as completed
+                await query(`
                     UPDATE campaigns
                     SET status = 'completed', completed_at = NOW()
                     WHERE id = $1
                 `, [campaign.id]);
 
-                    logger.info(`[QueueProcessor] ✅ Campaign ${campaign.id} COMPLETED: ${campaign.sent}/${campaign.total} sent, ${campaign.failed} failed`);
+                logger.info(`[QueueProcessor] ✅ Campaign ${campaign.id} COMPLETED: ${campaign.sent}/${campaign.total} sent, ${campaign.failed} failed`);
 
-                    // Send Telegram alert
-                    const message = `✅ Campaign ${campaign.id} completed!\nSent: ${campaign.sent}/${campaign.total}\nFailed: ${campaign.failed}`;
-                    try {
-                        await axios.post(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN || '8357127187:AAGdBAIC-4Kmu1JA5KmaPxJKhQc-htlvF9w'}/sendMessage`, {
-                            chat_id: process.env.TELEGRAM_CHAT_ID || '8014432452',
-                            text: message
-                        });
-                    } catch (err) {
-                        // Ignore telegram errors
-                    }
+                // Send Telegram alert
+                const message = `✅ Campaign ${campaign.id} completed!\nSent: ${campaign.sent}/${campaign.total}\nFailed: ${campaign.failed}`;
+                try {
+                    await axios.post(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN || '8357127187:AAGdBAIC-4Kmu1JA5KmaPxJKhQc-htlvF9w'}/sendMessage`, {
+                        chat_id: process.env.TELEGRAM_CHAT_ID || '8014432452',
+                        text: message
+                    });
+                } catch (err) {
+                    // Ignore telegram errors
                 }
-            } catch (err) {
-                // Ignore errors in completion check
             }
+        } catch (err) {
+            // Ignore errors in completion check
         }
     }
+}
 
 module.exports = new QueueProcessor();
 
