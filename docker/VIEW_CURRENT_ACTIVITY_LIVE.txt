@@ -1,0 +1,2 @@
+docker compose logs -f master | grep --line-buffered -E "(📥 Received|✅ Added|📊 Contacts|⏳.*waiting|📤 Processing|✅ Sent|❌ Failed|🚨 BLOCKED|📊 Batch|✅ Campaign.*COMPLETED)" | grep -v "GET /health"
+

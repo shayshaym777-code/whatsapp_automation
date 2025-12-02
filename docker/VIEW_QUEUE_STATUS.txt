@@ -1,0 +1,2 @@
+docker compose logs --tail=50 master | grep -E "(📤 Processing|✅ Sent|📊 Batch)" | tail -20
+
