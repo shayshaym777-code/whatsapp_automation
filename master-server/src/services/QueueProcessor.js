@@ -81,9 +81,9 @@ class QueueProcessor {
             }
 
             // Calculate total sending capacity
-            const MESSAGES_PER_MINUTE_PER_SENDER = 20; // Increased from 15 to 20
+            const MESSAGES_PER_MINUTE_PER_SENDER = 15; // 15 messages per minute per device
             const totalCapacity = availableSenders.length * MESSAGES_PER_MINUTE_PER_SENDER;
-            logger.info(`[QueueProcessor] 📤 Processing ${pendingCount} messages (${uniqueContacts} contacts: ${contactsWithChat} existing, ${newContacts} new) with ${availableSenders.length} senders (capacity: ${totalCapacity} msg/min)`);
+            logger.info(`[QueueProcessor] 📤 Processing ${pendingCount} messages (${uniqueContacts} contacts: ${contactsWithChat} existing, ${newContacts} new) with ${availableSenders.length} senders (capacity: ${totalCapacity} msg/min = ${availableSenders.length} × ${MESSAGES_PER_MINUTE_PER_SENDER})`);
 
             // Sort contacts by priority (existing chats first)
             // Take up to availableSenders.length * 2 contacts to maximize parallel sending
@@ -389,7 +389,7 @@ class QueueProcessor {
                 const minutesSinceReset = (now - lastReset) / (1000 * 60);
 
                 if (minutesSinceReset >= 1) {
-                    // Reset counter after 1 minute (allows 20 messages per minute per sender)
+                    // Reset counter after 1 minute (allows 15 messages per minute per device)
                     await query(`
                         UPDATE accounts
                         SET messages_last_minute = 0,
@@ -399,10 +399,10 @@ class QueueProcessor {
                     messagesLastMinute = 0;
                 }
 
-                // 3. Not over 20 messages per minute (increased limit)
-                const MESSAGES_PER_MINUTE_LIMIT = 20;
+                // 3. Not over 15 messages per minute per device (strict limit)
+                const MESSAGES_PER_MINUTE_LIMIT = 15;
                 if (messagesLastMinute >= MESSAGES_PER_MINUTE_LIMIT) {
-                    // Sender has reached 20 messages/minute limit - skip until reset
+                    // Device has reached 15 messages/minute limit - skip until reset
                     continue;
                 }
 
@@ -603,7 +603,7 @@ class QueueProcessor {
 
     // Update sender after sending
     async updateSenderAfterSend(senderPhone) {
-        // Update counters: messages_last_minute is reset every minute (max 20 per minute per sender)
+        // Update counters: messages_last_minute is reset every minute (max 15 per minute per device)
         await query(`
             UPDATE accounts
             SET 
@@ -614,14 +614,14 @@ class QueueProcessor {
                 last_message_at = NOW()
             WHERE phone = $1
         `, [senderPhone]);
-
+        
         // Log if approaching limit (for monitoring)
         const accountStats = await query(`
             SELECT messages_last_minute FROM accounts WHERE phone = $1
         `, [senderPhone]);
-
+        
         const currentCount = accountStats.rows[0]?.messages_last_minute || 0;
-        const MESSAGES_PER_MINUTE_LIMIT = 20;
+        const MESSAGES_PER_MINUTE_LIMIT = 15;
         if (currentCount >= MESSAGES_PER_MINUTE_LIMIT - 2) {
             logger.warn(`[QueueProcessor] ⚠️ ${senderPhone} approaching limit: ${currentCount}/${MESSAGES_PER_MINUTE_LIMIT} messages this minute`);
         }
