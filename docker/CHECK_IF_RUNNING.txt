@@ -1,0 +1,11 @@
+# בדיקה מהירה - האם המערכת רצה תקין
+
+# 1. בדוק אם Master רץ
+docker compose ps master
+
+# 2. בדוק לוגים אחרונים של Master
+docker compose logs --tail=20 master | grep -E "(QueueProcessor|Starting|Started|Error|error)"
+
+# 3. בדוק אם יש הודעות בתור
+docker compose exec -T postgres psql -U whatsapp -d whatsapp_automation -c "SELECT COUNT(*) as pending FROM message_queue WHERE status = 'pending';" 2>/dev/null || echo "Database not ready"
+
