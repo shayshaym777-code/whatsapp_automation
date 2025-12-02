@@ -1,0 +1,2 @@
+docker compose logs --tail=100 worker-1 master | grep -E "(📤|📥|✅|❌|SEND|Message sent|Worker response|Campaign)" | tail -30
+

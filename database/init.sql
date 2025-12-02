@@ -24,7 +24,12 @@ CREATE TABLE IF NOT EXISTS accounts (
     country VARCHAR(2),
     proxy_id VARCHAR(50),
     messages_today INTEGER DEFAULT 0,
+    messages_last_minute INTEGER DEFAULT 0,
+    messages_in_session INTEGER DEFAULT 0,
+    total_messages_sent INTEGER DEFAULT 0,
+    successful_messages INTEGER DEFAULT 0,
     last_message_at TIMESTAMP WITH TIME ZONE,
+    last_message_minute_reset TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     blocked_at TIMESTAMP WITH TIME ZONE,  -- If blocked, when it happened
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -105,6 +110,42 @@ CREATE TABLE IF NOT EXISTS send_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_send_log_campaign ON send_log(campaign_id);
+
+-- ============================================
+-- CHAT_HISTORY TABLE (for existing chats tracking)
+-- ============================================
+CREATE TABLE IF NOT EXISTS chat_history (
+    sender_phone VARCHAR(20) NOT NULL,
+    recipient_phone VARCHAR(20) NOT NULL,
+    last_message_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (sender_phone, recipient_phone),
+    FOREIGN KEY (sender_phone) REFERENCES accounts(phone) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_history_recipient ON chat_history(recipient_phone);
+CREATE INDEX IF NOT EXISTS idx_chat_history_last_message ON chat_history(last_message_at);
+
+-- ============================================
+-- MESSAGE_QUEUE TABLE (for queued messages)
+-- ============================================
+CREATE TABLE IF NOT EXISTS message_queue (
+    id SERIAL PRIMARY KEY,
+    campaign_id VARCHAR(50),
+    recipient_phone VARCHAR(20) NOT NULL,
+    recipient_name VARCHAR(100),
+    message_template TEXT NOT NULL,
+    priority INTEGER DEFAULT 0, -- Higher = more priority (existing chat = 10, new = 0)
+    status VARCHAR(20) DEFAULT 'pending', -- pending, processing, sent, failed
+    assigned_sender VARCHAR(20),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    processed_at TIMESTAMP WITH TIME ZONE,
+    CONSTRAINT queue_status_check CHECK (status IN ('pending', 'processing', 'sent', 'failed'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_queue_status ON message_queue(status);
+CREATE INDEX IF NOT EXISTS idx_queue_priority ON message_queue(priority DESC, created_at);
+CREATE INDEX IF NOT EXISTS idx_queue_campaign ON message_queue(campaign_id);
 
 -- ============================================
 -- VIEW: accounts_with_status

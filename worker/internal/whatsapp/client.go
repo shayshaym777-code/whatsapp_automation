@@ -936,8 +936,10 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 	sessionCount := acc.SessionMsgCount
 	acc.mu.RUnlock()
 
-	// === ANTI-BAN: Random delay 2-4 seconds + jitter ===
-	baseDelay := getRandomDelay()
+	// === ANTI-BAN: Random delay 1-7 seconds + jitter (v9.0)
+	// Check if existing chat (simplified - assume new for now, will be improved)
+	isExistingChat := false // TODO: Check chat history from Master
+	baseDelay := getRandomDelay(isExistingChat)
 
 	// === ANTI-BAN: Typing simulation (1-3 seconds) ===
 	typingDelay := getTypingDuration()
@@ -1234,13 +1236,19 @@ func addZeroWidthChars(text string) string {
 	return text
 }
 
-// getRandomDelay returns 2-4 seconds + jitter
-func getRandomDelay() time.Duration {
-	base := 2.0 + rand.Float64()*2.0 // 2-4 seconds
-	jitter := (rand.Float64() - 0.5) // -0.5 to +0.5
+// getRandomDelay returns 1-7 seconds + jitter (v9.0: updated for new sending mechanism)
+// Existing chat: 1-5 seconds, New contact: 3-7 seconds
+func getRandomDelay(isExistingChat bool) time.Duration {
+	var base float64
+	if isExistingChat {
+		base = 1.0 + rand.Float64()*4.0 // 1-5 seconds for existing chat
+	} else {
+		base = 3.0 + rand.Float64()*4.0 // 3-7 seconds for new contact
+	}
+	jitter := (rand.Float64() - 0.5) * 0.5 // -0.25 to +0.25
 	total := base + jitter
-	if total < 1.5 {
-		total = 1.5
+	if total < 0.5 {
+		total = 0.5
 	}
 	return time.Duration(total * float64(time.Second))
 }
@@ -1251,21 +1259,21 @@ func getTypingDuration() time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-// getPauseDuration returns pause based on message count
-// Every 10: 10-30 seconds
-// Every 50: 2-5 minutes
-// Every 100: 5-10 minutes
+// getPauseDuration returns pause based on message count (v9.0)
+// Every 10: 30-120 seconds
+// Every 50: 5-15 minutes
+// Every 100: 10-30 minutes
 func getPauseDuration(msgCount int) time.Duration {
 	if msgCount > 0 && msgCount%100 == 0 {
-		pause := 300 + rand.Intn(300) // 5-10 min
+		pause := 600 + rand.Intn(1200) // 10-30 min
 		return time.Duration(pause) * time.Second
 	}
 	if msgCount > 0 && msgCount%50 == 0 {
-		pause := 120 + rand.Intn(180) // 2-5 min
+		pause := 300 + rand.Intn(600) // 5-15 min
 		return time.Duration(pause) * time.Second
 	}
 	if msgCount > 0 && msgCount%10 == 0 {
-		pause := 10 + rand.Intn(20) // 10-30 sec
+		pause := 30 + rand.Intn(90) // 30-120 sec
 		return time.Duration(pause) * time.Second
 	}
 	return 0

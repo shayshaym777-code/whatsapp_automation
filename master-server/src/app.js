@@ -10,6 +10,7 @@ const campaignsRouter = require('./api/routes/campaigns');
 const { query } = require('./config/database');
 const { apiKeyAuth } = require('./middleware/auth');
 const { requestLogger } = require('./middleware/requestLogger');
+const queueProcessor = require('./services/QueueProcessor');
 
 dotenv.config();
 
@@ -75,7 +76,7 @@ function scheduleDailyReset() {
 
 async function resetDailyCounts() {
     try {
-        await query('UPDATE accounts SET messages_today = 0');
+        await query('UPDATE accounts SET messages_today = 0, messages_last_minute = 0');
         logger.info('Daily message counts reset');
     } catch (err) {
         logger.error(`Daily reset failed: ${err.message}`);
@@ -86,8 +87,12 @@ async function resetDailyCounts() {
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
-    logger.info(`🚀 Master server v8.0 started on port ${PORT}`);
+    logger.info(`🚀 Master server v9.0 started on port ${PORT}`);
     scheduleDailyReset();
+    
+    // Start queue processor
+    queueProcessor.start();
+    logger.info('[QueueProcessor] Started');
 });
 
 module.exports = app;
