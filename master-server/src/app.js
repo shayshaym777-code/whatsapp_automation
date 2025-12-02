@@ -8,6 +8,7 @@ const accountsRouter = require('./api/routes/accounts');
 const sendRouter = require('./api/routes/send');
 const campaignsRouter = require('./api/routes/campaigns');
 const { query } = require('./config/database');
+const { apiKeyAuth } = require('./middleware/auth');
 
 dotenv.config();
 
@@ -19,15 +20,15 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// Health check
+// Health check (no auth required)
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', version: '8.0', timestamp: new Date().toISOString() });
 });
 
-// API Routes
-app.use('/api/accounts', accountsRouter);
-app.use('/api/send', sendRouter);
-app.use('/api/campaigns', campaignsRouter);
+// API Routes (protected with API key)
+app.use('/api/accounts', apiKeyAuth, accountsRouter);
+app.use('/api/send', apiKeyAuth, sendRouter);
+app.use('/api/campaigns', apiKeyAuth, campaignsRouter);
 
 // Alias: GET /api/campaign/:id/status (singular)
 app.get('/api/campaign/:id/status', async (req, res, next) => {
