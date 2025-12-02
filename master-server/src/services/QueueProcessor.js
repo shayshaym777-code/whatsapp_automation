@@ -24,7 +24,7 @@ class QueueProcessor {
         }
 
         logger.info('[QueueProcessor] 🚀 Starting queue processor');
-        
+
         // Process queue every 500ms
         this.processingInterval = setInterval(() => {
             this.processQueue().catch(err => {
@@ -66,18 +66,18 @@ class QueueProcessor {
 
             // Sort contacts by priority (existing chats first)
             const contacts = await this.getContactsByPriority();
-            
+
             for (const contact of contacts) {
                 // Find best sender for this contact
                 const sender = await this.findBestSender(contact.recipient_phone, availableSenders);
-                
+
                 if (!sender) {
                     continue; // No sender available for this contact
                 }
 
                 // Send message
                 await this.sendMessage(sender, contact);
-                
+
                 // Update sender availability
                 await this.updateSenderAfterSend(sender.phone);
             }
@@ -91,42 +91,60 @@ class QueueProcessor {
 
     // Get count of pending messages
     async getPendingCount() {
-        const result = await query(`
-            SELECT COUNT(*) as count
-            FROM message_queue
-            WHERE status = 'pending'
-        `);
-        return parseInt(result.rows[0].count);
+        try {
+            const result = await query(`
+                SELECT COUNT(*) as count
+                FROM message_queue
+                WHERE status = 'pending'
+            `);
+            return parseInt(result.rows[0].count);
+        } catch (err) {
+            // If table doesn't exist yet, return 0 (will retry later)
+            if (err.message && err.message.includes('does not exist')) {
+                logger.warn('[QueueProcessor] message_queue table not found, waiting for migration...');
+                return 0;
+            }
+            throw err;
+        }
     }
 
     // Get contacts sorted by priority (existing chats first)
     async getContactsByPriority() {
-        const result = await query(`
-            SELECT 
-                q.id,
-                q.campaign_id,
-                q.recipient_phone,
-                q.recipient_name,
-                q.message_template,
-                q.priority,
-                CASE WHEN ch.sender_phone IS NOT NULL THEN true ELSE false END as has_existing_chat
-            FROM message_queue q
-            LEFT JOIN chat_history ch ON ch.recipient_phone = q.recipient_phone
-            WHERE q.status = 'pending'
-            ORDER BY 
-                has_existing_chat DESC,  -- Existing chats first
-                q.priority DESC,
-                q.created_at ASC
-            LIMIT 10
-        `);
-        return result.rows;
+        try {
+            const result = await query(`
+                SELECT 
+                    q.id,
+                    q.campaign_id,
+                    q.recipient_phone,
+                    q.recipient_name,
+                    q.message_template,
+                    q.priority,
+                    CASE WHEN ch.sender_phone IS NOT NULL THEN true ELSE false END as has_existing_chat
+                FROM message_queue q
+                LEFT JOIN chat_history ch ON ch.recipient_phone = q.recipient_phone
+                WHERE q.status = 'pending'
+                ORDER BY 
+                    has_existing_chat DESC,  -- Existing chats first
+                    q.priority DESC,
+                    q.created_at ASC
+                LIMIT 10
+            `);
+            return result.rows;
+        } catch (err) {
+            // If table doesn't exist yet, return empty array
+            if (err.message && err.message.includes('does not exist')) {
+                logger.warn('[QueueProcessor] Tables not found, waiting for migration...');
+                return [];
+            }
+            throw err;
+        }
     }
 
     // Get available senders
     async getAvailableSenders() {
         // Get all healthy accounts from workers
         const allAccounts = [];
-        
+
         for (const worker of this.workers) {
             try {
                 const response = await axios.get(`${worker.url}/accounts`, { timeout: 5000 });
@@ -252,7 +270,7 @@ class QueueProcessor {
         let score = 0;
 
         // 1. Account age (0-30 points)
-        const accountAgeDays = sender.created_at 
+        const accountAgeDays = sender.created_at
             ? (Date.now() - new Date(sender.created_at)) / (1000 * 60 * 60 * 24)
             : 0;
         score += Math.min(accountAgeDays, 30);
@@ -328,7 +346,7 @@ class QueueProcessor {
 
         } catch (err) {
             logger.error(`[QueueProcessor] ❌ Failed to send ${contact.id}: ${err.message}`);
-            
+
             // Mark as failed
             await query(`
                 UPDATE message_queue
