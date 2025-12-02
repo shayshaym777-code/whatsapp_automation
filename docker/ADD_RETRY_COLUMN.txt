@@ -1,0 +1,2 @@
+docker compose exec -T postgres psql -U whatsapp -d whatsapp_automation -c "ALTER TABLE message_queue ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0;"
+
