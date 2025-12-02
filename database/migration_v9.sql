@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS message_queue (
     priority INTEGER DEFAULT 0,
     status VARCHAR(20) DEFAULT 'pending',
     assigned_sender VARCHAR(20),
+    retry_count INTEGER DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     processed_at TIMESTAMP WITH TIME ZONE,
     CONSTRAINT queue_status_check CHECK (status IN ('pending', 'processing', 'sent', 'failed'))

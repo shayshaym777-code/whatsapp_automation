@@ -477,12 +477,49 @@ class QueueProcessor {
 
             logger.error(`[QueueProcessor] ❌ Failed to send ${contact.id} (${contact.recipient_phone}) from ${sender.phone}: ${errorMsg}`);
 
-            // Mark as failed
-            await query(`
-                UPDATE message_queue
-                SET status = 'failed'
-                WHERE id = $1
-            `, [contact.id]);
+            // Check if this is a permanent failure (blocked account) or temporary
+            const isPermanentFailure = errorMsg.includes('blocked') || errorMsg.includes('banned') || errorMsg.includes('restricted');
+            
+            if (isPermanentFailure) {
+                // Permanent failure - mark as failed
+                await query(`
+                    UPDATE message_queue
+                    SET status = 'failed',
+                        processed_at = NOW()
+                    WHERE id = $1
+                `, [contact.id]);
+            } else {
+                // Temporary failure - reset to pending for retry (max 3 retries)
+                const retryResult = await query(`
+                    SELECT retry_count FROM message_queue WHERE id = $1
+                `, [contact.id]);
+                
+                const currentRetryCount = retryResult.rows[0]?.retry_count || 0;
+                const newRetryCount = currentRetryCount + 1;
+                
+                if (newRetryCount < 3) {
+                    // Retry - reset to pending (will be retried in next batch)
+                    await query(`
+                        UPDATE message_queue
+                        SET status = 'pending',
+                            retry_count = $1,
+                            assigned_sender = NULL,
+                            processed_at = NULL
+                        WHERE id = $2
+                    `, [newRetryCount, contact.id]);
+                    logger.info(`[QueueProcessor] 🔄 Retry ${newRetryCount}/3 for ${contact.recipient_phone} - will retry in next batch`);
+                } else {
+                    // Max retries reached - mark as failed permanently
+                    await query(`
+                        UPDATE message_queue
+                        SET status = 'failed',
+                            retry_count = $1,
+                            processed_at = NOW()
+                        WHERE id = $2
+                    `, [newRetryCount, contact.id]);
+                    logger.error(`[QueueProcessor] ❌ Max retries (${newRetryCount}) reached for ${contact.recipient_phone} - marking as failed`);
+                }
+            }
 
             return false;
         }
@@ -520,6 +557,14 @@ class QueueProcessor {
             `);
 
             for (const campaign of campaigns.rows) {
+                // Get list of failed phone numbers
+                const failedPhones = await query(`
+                    SELECT DISTINCT recipient_phone, recipient_name
+                    FROM message_queue
+                    WHERE campaign_id = $1 AND status = 'failed'
+                    ORDER BY recipient_phone
+                `, [campaign.id]);
+
                 // Mark campaign as completed
                 await query(`
                     UPDATE campaigns
@@ -527,14 +572,36 @@ class QueueProcessor {
                     WHERE id = $1
                 `, [campaign.id]);
 
-                logger.info(`[QueueProcessor] ✅ Campaign ${campaign.id} COMPLETED: ${campaign.sent}/${campaign.total} sent, ${campaign.failed} failed`);
+                // Log detailed completion summary
+                const successRate = campaign.total > 0 ? ((campaign.sent / campaign.total) * 100).toFixed(1) : 0;
+                logger.info(`[QueueProcessor] ✅ Campaign ${campaign.id} COMPLETED:`);
+                logger.info(`[QueueProcessor] 📊 Summary: ${campaign.sent}/${campaign.total} sent (${successRate}%), ${campaign.failed} failed`);
+
+                // Log failed numbers if any
+                if (failedPhones.rows.length > 0) {
+                    logger.error(`[QueueProcessor] ❌ Failed numbers (${failedPhones.rows.length}):`);
+                    const failedList = failedPhones.rows.map((row, idx) => {
+                        const name = row.recipient_name ? ` (${row.recipient_name})` : '';
+                        return `${idx + 1}. ${row.recipient_phone}${name}`;
+                    }).join('\n');
+                    logger.error(`[QueueProcessor] ${failedList}`);
+                }
 
                 // Send Telegram alert
-                const message = `✅ Campaign ${campaign.id} completed!\nSent: ${campaign.sent}/${campaign.total}\nFailed: ${campaign.failed}`;
+                let telegramMessage = `✅ Campaign ${campaign.id} completed!\nSent: ${campaign.sent}/${campaign.total} (${successRate}%)\nFailed: ${campaign.failed}`;
+                
+                if (failedPhones.rows.length > 0 && failedPhones.rows.length <= 20) {
+                    // Include failed numbers if not too many
+                    const failedNumbers = failedPhones.rows.map(r => r.recipient_phone).join(', ');
+                    telegramMessage += `\n\n❌ Failed:\n${failedNumbers}`;
+                } else if (failedPhones.rows.length > 20) {
+                    telegramMessage += `\n\n❌ ${failedPhones.rows.length} numbers failed (too many to list)`;
+                }
+
                 try {
                     await axios.post(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN || '8357127187:AAGdBAIC-4Kmu1JA5KmaPxJKhQc-htlvF9w'}/sendMessage`, {
                         chat_id: process.env.TELEGRAM_CHAT_ID || '8014432452',
-                        text: message
+                        text: telegramMessage
                     });
                 } catch (err) {
                     // Ignore telegram errors
