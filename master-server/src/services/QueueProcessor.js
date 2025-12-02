@@ -54,17 +54,8 @@ class QueueProcessor {
 
             // Check if we have at least 2 messages waiting
             const pendingCount = await this.getPendingCount();
-
-            // Always log when checking (for debugging)
-            if (pendingCount !== null && pendingCount > 0) {
-                logger.info(`[QueueProcessor] 🔍 Checking queue: ${pendingCount} message(s) pending`);
-            }
-
+            
             if (pendingCount === null || pendingCount < 2) {
-                // Log if there are pending messages but less than 2
-                if (pendingCount !== null && pendingCount > 0) {
-                    logger.info(`[QueueProcessor] ⏳ ${pendingCount} message(s) waiting (need 2+ to start)`);
-                }
                 this.isProcessing = false;
                 return; // Wait for more messages or table not ready
             }
@@ -75,12 +66,9 @@ class QueueProcessor {
             const newContacts = uniqueContacts - contactsWithChat;
 
             // Get available senders
-            logger.info(`[QueueProcessor] 🔍 Getting available senders...`);
             const availableSenders = await this.getAvailableSenders();
-            logger.info(`[QueueProcessor] 🔍 Found ${availableSenders.length} available senders`);
-
+            
             if (availableSenders.length === 0) {
-                logger.warn('[QueueProcessor] ⚠️ No available senders - cannot process queue');
                 this.isProcessing = false;
                 return;
             }
@@ -89,9 +77,8 @@ class QueueProcessor {
 
             // Sort contacts by priority (existing chats first)
             const contacts = await this.getContactsByPriority();
-
+            
             if (contacts.length === 0) {
-                logger.warn('[QueueProcessor] ⚠️ No contacts found in queue (but pendingCount > 0)');
                 this.isProcessing = false;
                 return;
             }
@@ -129,7 +116,6 @@ class QueueProcessor {
 
         } catch (err) {
             logger.error(`[QueueProcessor] ❌ Process error: ${err.message}`);
-            logger.error(`[QueueProcessor] ❌ Error stack: ${err.stack}`);
         } finally {
             this.isProcessing = false;
         }
@@ -223,23 +209,19 @@ class QueueProcessor {
     // Get available senders
     async getAvailableSenders() {
         logger.info(`[QueueProcessor] 🔍 getAvailableSenders() called`);
-        
+
         // Get all healthy accounts from workers
         const allAccounts = [];
         let totalAccountsFromWorkers = 0;
-        
-        logger.info(`[QueueProcessor] 🔍 Checking ${this.workers.length} workers`);
 
-        logger.info(`[QueueProcessor] 🔍 Starting to get available senders from ${this.workers.length} workers`);
+        logger.info(`[QueueProcessor] 🔍 Checking ${this.workers.length} workers`);
 
         for (const worker of this.workers) {
             try {
-                logger.info(`[QueueProcessor] 🔍 Checking worker: ${worker.id} at ${worker.url}`);
                 const response = await axios.get(`${worker.url}/accounts`, { timeout: 5000 });
                 if (response.data && response.data.accounts) {
                     const workerAccounts = response.data.accounts.filter(acc => acc.logged_in && acc.connected);
                     totalAccountsFromWorkers += response.data.accounts.length;
-                    logger.info(`[QueueProcessor] 🔍 Worker ${worker.id}: ${workerAccounts.length} connected accounts (out of ${response.data.accounts.length} total)`);
 
                     for (const acc of workerAccounts) {
                         allAccounts.push({
@@ -248,27 +230,19 @@ class QueueProcessor {
                             ...acc
                         });
                     }
-                } else {
-                    logger.warn(`[QueueProcessor] ⚠️ Worker ${worker.id} returned no accounts data`);
                 }
             } catch (err) {
-                logger.error(`[QueueProcessor] ❌ Failed to get accounts from ${worker.id}: ${err.message}`);
-                logger.error(`[QueueProcessor] ❌ Error stack: ${err.stack}`);
+                // Silent fail - don't log every error
             }
         }
-
-        logger.info(`[QueueProcessor] 🔍 Total accounts from workers: ${allAccounts.length} connected (${totalAccountsFromWorkers} total)`);
-
+        
         if (allAccounts.length === 0) {
-            logger.warn(`[QueueProcessor] ⚠️ No accounts found from any worker!`);
             return [];
         }
 
         // Filter by availability criteria
         const available = [];
         const now = new Date();
-
-        logger.info(`[QueueProcessor] 🔍 Filtering ${allAccounts.length} accounts by availability criteria`);
 
         for (const account of allAccounts) {
             try {
@@ -288,17 +262,16 @@ class QueueProcessor {
                 `, [account.phone]);
 
                 if (dbAccount.rows.length === 0) {
-                    // Account not in DB - create it automatically
-                    logger.info(`[QueueProcessor] 🔍 Account ${account.phone} not in DB - creating automatically`);
-                    try {
-                        await query(`
+                // Account not in DB - create it automatically
+                try {
+                    await query(`
                         INSERT INTO accounts (phone, created_at, messages_last_minute, last_message_minute_reset)
                         VALUES ($1, NOW(), 0, NOW())
                         ON CONFLICT (phone) DO NOTHING
                     `, [account.phone]);
-
-                        // Retry getting account from DB
-                        const retryAccount = await query(`
+                    
+                    // Retry getting account from DB
+                    const retryAccount = await query(`
                         SELECT 
                             phone,
                             messages_last_minute,
@@ -311,59 +284,52 @@ class QueueProcessor {
                         FROM accounts
                         WHERE phone = $1
                     `, [account.phone]);
-
-                        if (retryAccount.rows.length === 0) {
-                            logger.warn(`[QueueProcessor] ⚠️ Failed to create account ${account.phone} in DB`);
-                            continue;
-                        }
-
-                        // Use the newly created account
-                        const acc = retryAccount.rows[0];
-
-                        // Check if available (skip blocked check for new accounts)
-                        let messagesLastMinute = acc.messages_last_minute || 0;
-                        const lastReset = acc.last_message_minute_reset ? new Date(acc.last_message_minute_reset) : new Date(0);
-                        const minutesSinceReset = (now - lastReset) / (1000 * 60);
-
-                        if (minutesSinceReset >= 1) {
-                            messagesLastMinute = 0;
-                        }
-
-                        if (messagesLastMinute >= 15) {
-                            continue;
-                        }
-
-                        if (acc.last_message_at) {
-                            const secondsSinceLastMessage = (now - new Date(acc.last_message_at)) / 1000;
-                            if (secondsSinceLastMessage < 4) {
-                                continue;
-                            }
-                        }
-
-                        available.push({
-                            phone: account.phone,
-                            worker_url: account.worker_url,
-                            messages_last_minute: messagesLastMinute,
-                            last_message_at: acc.last_message_at,
-                            created_at: acc.created_at,
-                            total_messages_sent: acc.total_messages_sent || 0,
-                            successful_messages: acc.successful_messages || 0
-                        });
-
-                        logger.info(`[QueueProcessor] ✅ Created and added account ${account.phone} to available senders`);
-                        continue;
-                    } catch (err) {
-                        logger.error(`[QueueProcessor] ❌ Error creating account ${account.phone}: ${err.message}`);
-                        logger.error(`[QueueProcessor] ❌ Error stack: ${err.stack}`);
+                    
+                    if (retryAccount.rows.length === 0) {
                         continue;
                     }
+                    
+                    // Use the newly created account
+                    const acc = retryAccount.rows[0];
+                    
+                    // Check if available (skip blocked check for new accounts)
+                    let messagesLastMinute = acc.messages_last_minute || 0;
+                    const lastReset = acc.last_message_minute_reset ? new Date(acc.last_message_minute_reset) : new Date(0);
+                    const minutesSinceReset = (now - lastReset) / (1000 * 60);
+                    
+                    if (minutesSinceReset >= 1) {
+                        messagesLastMinute = 0;
+                    }
+                    
+                    if (messagesLastMinute >= 15) {
+                        continue;
+                    }
+                    
+                    if (acc.last_message_at) {
+                        const secondsSinceLastMessage = (now - new Date(acc.last_message_at)) / 1000;
+                        if (secondsSinceLastMessage < 4) {
+                            continue;
+                        }
+                    }
+                    
+                    available.push({
+                        phone: account.phone,
+                        worker_url: account.worker_url,
+                        messages_last_minute: messagesLastMinute,
+                        last_message_at: acc.last_message_at,
+                        created_at: acc.created_at,
+                        total_messages_sent: acc.total_messages_sent || 0,
+                        successful_messages: acc.successful_messages || 0
+                    });
+                    continue;
                 } catch (err) {
-                    logger.error(`[QueueProcessor] ❌ Error checking account ${account.phone}: ${err.message}`);
-                    logger.error(`[QueueProcessor] ❌ Error stack: ${err.stack}`);
                     continue;
                 }
-
-                try {
+            } catch (err) {
+                continue;
+            }
+            
+            try {
 
                     const acc = dbAccount.rows[0];
 
@@ -393,14 +359,13 @@ class QueueProcessor {
                         continue;
                     }
 
-                    // 4. Cooldown: at least 4 seconds since last message
-                    if (acc.last_message_at) {
-                        const secondsSinceLastMessage = (now - new Date(acc.last_message_at)) / 1000;
-                        if (secondsSinceLastMessage < 4) {
-                            logger.debug(`[QueueProcessor] 🔍 Account ${account.phone} skipped: cooldown (${secondsSinceLastMessage.toFixed(1)}s < 4s)`);
-                            continue;
-                        }
-                    }
+            // 4. Cooldown: at least 4 seconds since last message
+            if (acc.last_message_at) {
+                const secondsSinceLastMessage = (now - new Date(acc.last_message_at)) / 1000;
+                if (secondsSinceLastMessage < 4) {
+                    continue;
+                }
+            }
 
                     available.push({
                         phone: account.phone,
@@ -418,67 +383,7 @@ class QueueProcessor {
                 }
             }
 
-        logger.info(`[QueueProcessor] 🔍 After filtering: ${available.length} available senders (from ${allAccounts.length} connected)`);
-
-            // If no senders available, log why
-            if (available.length === 0 && allAccounts.length > 0) {
-                logger.warn(`[QueueProcessor] ⚠️ All ${allAccounts.length} senders were filtered out. Reasons:`);
-                // Count reasons
-                let blockedCount = 0;
-                let overLimitCount = 0;
-                let cooldownCount = 0;
-                let notInDbCount = 0;
-
-                for (const account of allAccounts) {
-                    const dbAccount = await query(`
-                    SELECT 
-                        phone,
-                        messages_last_minute,
-                        last_message_at,
-                        blocked_at,
-                        created_at
-                    FROM accounts
-                    WHERE phone = $1
-                `, [account.phone]);
-
-                    if (dbAccount.rows.length === 0) {
-                        notInDbCount++;
-                        continue;
-                    }
-
-                    const acc = dbAccount.rows[0];
-
-                    if (acc.blocked_at && new Date(acc.blocked_at) > new Date(Date.now() - 48 * 60 * 60 * 1000)) {
-                        blockedCount++;
-                        continue;
-                    }
-
-                    let messagesLastMinute = acc.messages_last_minute || 0;
-                    const lastReset = acc.last_message_minute_reset ? new Date(acc.last_message_minute_reset) : new Date(0);
-                    const minutesSinceReset = (now - lastReset) / (1000 * 60);
-
-                    if (minutesSinceReset >= 1) {
-                        messagesLastMinute = 0;
-                    }
-
-                    if (messagesLastMinute >= 15) {
-                        overLimitCount++;
-                        continue;
-                    }
-
-                    if (acc.last_message_at) {
-                        const secondsSinceLastMessage = (now - new Date(acc.last_message_at)) / 1000;
-                        if (secondsSinceLastMessage < 4) {
-                            cooldownCount++;
-                            continue;
-                        }
-                    }
-                }
-
-                logger.warn(`[QueueProcessor] ⚠️ Filter reasons: ${blockedCount} blocked, ${overLimitCount} over limit (15/min), ${cooldownCount} in cooldown, ${notInDbCount} not in DB`);
-            }
-
-            return available;
+        return available;
         }
 
     // Find best sender for recipient
