@@ -15,7 +15,7 @@ function apiKeyAuth(req, res, next) {
     // If API key is required but not provided
     if (!apiKey) {
         console.error(`[AUTH] ❌ REJECTED: No API key provided | IP: ${clientIP} | Path: ${req.path}`);
-        return res.status(401).json({ 
+        return res.status(401).json({
             error: 'API key required',
             message: 'Please provide X-API-Key header or Authorization: Bearer <key>'
         });
@@ -25,7 +25,7 @@ function apiKeyAuth(req, res, next) {
     if (apiKey !== expectedKey) {
         const providedKeyPreview = apiKey.length > 8 ? '***' + apiKey.slice(-4) : '***';
         console.error(`[AUTH] ❌ REJECTED: Invalid API key | IP: ${clientIP} | Path: ${req.path} | Provided: ${providedKeyPreview}`);
-        return res.status(403).json({ 
+        return res.status(403).json({
             error: 'Invalid API key',
             message: 'The provided API key is incorrect'
         });

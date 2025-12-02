@@ -157,32 +157,54 @@ async function processCampaign(campaignId, distribution, message) {
                 const toPhone = typeof contact === 'object' ? contact.phone : contact;
                 const name = typeof contact === 'object' ? (contact.name || '') : '';
 
-                await axios.post(`${data.worker_url}/send`, {
+                // Send to worker and check response
+                console.log(`[Campaign ${campaignId}] 📤 Sending from ${phone} to ${toPhone} via ${data.worker_url}`);
+                
+                const response = await axios.post(`${data.worker_url}/send`, {
                     from_phone: phone,
                     to_phone: toPhone,
                     message: message,
                     name: name
                 }, { timeout: 30000 });
 
-                sent++;
+                console.log(`[Campaign ${campaignId}] 📥 Worker response from ${phone} to ${toPhone}:`, JSON.stringify(response.data));
 
-                // Log success (ignore DB errors)
-                try {
-                    await query(`
-                        INSERT INTO send_log (campaign_id, phone, recipient, status)
-                        VALUES ($1, $2, $3, 'SENT')
-                    `, [campaignId, phone, toPhone]);
-                } catch (e) { }
+                // Only count as sent if worker confirms success
+                if (response.data && response.data.success === true) {
+                    sent++;
+                    console.log(`[Campaign ${campaignId}] ✅ Sent from ${phone} to ${toPhone} | MessageID: ${response.data.message_id || 'N/A'}`);
+
+                    // Log success (ignore DB errors)
+                    try {
+                        await query(`
+                            INSERT INTO send_log (campaign_id, phone, recipient, status)
+                            VALUES ($1, $2, $3, 'SENT')
+                        `, [campaignId, phone, toPhone]);
+                    } catch (e) { }
+                } else {
+                    // Worker returned but without success confirmation
+                    failed++;
+                    const errorMsg = response.data?.error || 'Worker did not confirm success';
+                    console.error(`[Campaign ${campaignId}] ⚠️ Worker response without success from ${phone} to ${toPhone}:`, errorMsg);
+
+                    try {
+                        await query(`
+                            INSERT INTO send_log (campaign_id, phone, recipient, status, error)
+                            VALUES ($1, $2, $3, 'FAILED', $4)
+                        `, [campaignId, phone, toPhone, errorMsg]);
+                    } catch (e) { }
+                }
 
             } catch (err) {
                 failed++;
-                console.error(`[Campaign ${campaignId}] Failed from ${phone}:`, err.message);
+                const errorMsg = err.response?.data?.error || err.message || 'Unknown error';
+                console.error(`[Campaign ${campaignId}] ❌ Failed from ${phone} to ${typeof contact === 'object' ? contact.phone : contact}:`, errorMsg);
 
                 try {
                     await query(`
                         INSERT INTO send_log (campaign_id, phone, recipient, status, error)
                         VALUES ($1, $2, $3, 'FAILED', $4)
-                    `, [campaignId, phone, typeof contact === 'object' ? contact.phone : contact, err.message]);
+                    `, [campaignId, phone, typeof contact === 'object' ? contact.phone : contact, errorMsg]);
                 } catch (e) { }
             }
         }

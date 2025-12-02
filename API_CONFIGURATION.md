@@ -3,19 +3,23 @@
 ## מה הם שני הערכים האלה?
 
 ### 1. **EXTERNAL_API_URL**
+
 ```
 http://130.94.113.203:5000
 ```
 
 **מה זה?**
+
 - זה הכתובת הציבורית של ה-Master Server API שלך
 - זה ה-URL שהאתר החיצוני צריך להשתמש בו כדי לשלוח בקשות
 
 **איפה זה מוגדר?**
+
 - בקובץ `.env` בשרת: `EXTERNAL_API_URL=http://130.94.113.203:5000`
 - או ישירות בקוד של האתר החיצוני
 
 **דוגמה לשימוש:**
+
 ```bash
 curl http://130.94.113.203:5000/api/send \
   -H "X-API-Key: 8a229939..." \
@@ -26,15 +30,18 @@ curl http://130.94.113.203:5000/api/send \
 ---
 
 ### 2. **EXTERNAL_API_KEY**
+
 ```
 8a229939...
 ```
 
 **מה זה?**
+
 - זה מפתח API לאימות בקשות
 - כל בקשה חייבת לכלול את המפתח הזה ב-header
 
 **איפה זה מוגדר?**
+
 - בקובץ `.env` בשרת: `API_KEY=8a229939...`
 - האתר החיצוני צריך להשתמש באותו מפתח
 
@@ -42,11 +49,13 @@ curl http://130.94.113.203:5000/api/send \
 יש שתי אפשרויות:
 
 **אפשרות 1: X-API-Key header**
+
 ```bash
 curl -H "X-API-Key: 8a229939..." http://130.94.113.203:5000/api/send
 ```
 
 **אפשרות 2: Authorization Bearer**
+
 ```bash
 curl -H "Authorization: Bearer 8a229939..." http://130.94.113.203:5000/api/send
 ```
@@ -56,12 +65,14 @@ curl -H "Authorization: Bearer 8a229939..." http://130.94.113.203:5000/api/send
 ## 🔧 הגדרה בשרת
 
 ### שלב 1: עדכן את `.env`
+
 ```bash
 cd ~/whatsapp_automation/docker
 nano .env
 ```
 
 עדכן את השורות הבאות:
+
 ```bash
 # כתובת ה-API הציבורית שלך
 EXTERNAL_API_URL=http://130.94.113.203:5000
@@ -71,6 +82,7 @@ API_KEY=8a229939...
 ```
 
 ### שלב 2: אתחל את השירותים
+
 ```bash
 docker compose restart master
 ```
@@ -136,6 +148,6 @@ curl http://130.94.113.203:5000/api/send \
 | **EXTERNAL_API_KEY** | מפתח לאימות בקשות | `8a229939...` |
 
 **האתר החיצוני צריך:**
+
 - לשלוח בקשות ל-`EXTERNAL_API_URL`
 - לכלול את `EXTERNAL_API_KEY` ב-header `X-API-Key`
-
