@@ -1,0 +1,4 @@
+# פקודה אחת - עדכן קוד, בנה מחדש Master, ובדוק לוגים:
+
+cd ~/whatsapp_automation && git reset --hard origin/main && cd docker && docker compose up -d --build master && sleep 20 && docker compose logs --tail=50 master | grep -E "(QueueProcessor|message_queue|chat_history|✅|❌|Error|error|Starting|Started|table not found)" | tail -30
+
