@@ -1,0 +1,2 @@
+cd ~/whatsapp_automation/docker && git pull origin main && [ ! -f .env ] && cp env.template .env || true && docker compose down && docker compose up -d --build && sleep 10 && docker compose ps && echo "✅ עדכון הושלם! Dashboard: http://$(hostname -I | awk '{print $1}'):8080"
+
