@@ -58,6 +58,11 @@ class QueueProcessor {
                 return; // Wait for more messages or table not ready
             }
 
+            // Get unique contacts count
+            const uniqueContacts = await this.getUniqueContactsCount();
+            const contactsWithChat = await this.getContactsWithChatCount();
+            const newContacts = uniqueContacts - contactsWithChat;
+
             // Get available senders
             const availableSenders = await this.getAvailableSenders();
             if (availableSenders.length === 0) {
@@ -65,11 +70,11 @@ class QueueProcessor {
                 return;
             }
 
-            logger.info(`[QueueProcessor] 📤 Processing ${pendingCount} messages with ${availableSenders.length} senders`);
+            logger.info(`[QueueProcessor] 📤 Processing ${pendingCount} messages (${uniqueContacts} contacts: ${contactsWithChat} existing, ${newContacts} new) with ${availableSenders.length} senders`);
 
             // Sort contacts by priority (existing chats first)
             const contacts = await this.getContactsByPriority();
-            
+
             if (contacts.length === 0) {
                 return;
             }
@@ -87,7 +92,7 @@ class QueueProcessor {
 
                 // Send message
                 const success = await this.sendMessage(sender, contact);
-                
+
                 if (success) {
                     sentCount++;
                     // Update sender availability
@@ -133,6 +138,35 @@ class QueueProcessor {
                 return null;
             }
             throw err;
+        }
+    }
+
+    // Get unique contacts count in queue
+    async getUniqueContactsCount() {
+        try {
+            const result = await query(`
+                SELECT COUNT(DISTINCT recipient_phone) as count
+                FROM message_queue
+                WHERE status = 'pending'
+            `);
+            return parseInt(result.rows[0].count) || 0;
+        } catch (err) {
+            return 0;
+        }
+    }
+
+    // Get contacts with existing chat count
+    async getContactsWithChatCount() {
+        try {
+            const result = await query(`
+                SELECT COUNT(DISTINCT q.recipient_phone) as count
+                FROM message_queue q
+                INNER JOIN chat_history ch ON ch.recipient_phone = q.recipient_phone
+                WHERE q.status = 'pending'
+            `);
+            return parseInt(result.rows[0].count) || 0;
+        } catch (err) {
+            return 0;
         }
     }
 
@@ -382,7 +416,7 @@ class QueueProcessor {
                 SET status = 'failed'
                 WHERE id = $1
             `, [contact.id]);
-            
+
             return false;
         }
     }

@@ -97,6 +97,8 @@ router.post('/', async (req, res, next) => {
         // Add messages to queue with priority
         // Priority: 10 for existing chats, 0 for new contacts
         const queueInserts = [];
+        let existingChatsCount = 0;
+        let newContactsCount = 0;
 
         for (const contact of normalizedContacts) {
             // Check if there's existing chat
@@ -107,7 +109,14 @@ router.post('/', async (req, res, next) => {
                 LIMIT 1
             `, [contact.phone]);
 
-            const priority = existingChat.rows.length > 0 ? 10 : 0;
+            const hasExistingChat = existingChat.rows.length > 0;
+            const priority = hasExistingChat ? 10 : 0;
+
+            if (hasExistingChat) {
+                existingChatsCount++;
+            } else {
+                newContactsCount++;
+            }
 
             queueInserts.push({
                 campaign_id: campaignId,
@@ -126,7 +135,11 @@ router.post('/', async (req, res, next) => {
             `, [item.campaign_id, item.recipient_phone, item.recipient_name, item.message_template, item.priority]);
         }
 
+        // Count unique contacts
+        const uniqueContacts = new Set(normalizedContacts.map(c => c.phone)).size;
+        
         console.log(`[Send] ✅ Added ${queueInserts.length} messages to queue | Campaign: ${campaignId}`);
+        console.log(`[Send] 📊 Contacts: ${uniqueContacts} unique | ${existingChatsCount} existing chats, ${newContactsCount} new`);
 
         // Start queue processor if not running
         queueProcessor.start();
