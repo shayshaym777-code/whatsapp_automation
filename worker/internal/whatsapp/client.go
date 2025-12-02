@@ -998,7 +998,7 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 		acc.MessagesSent++
 		acc.mu.Unlock()
 
-		log.Printf("[%s] ❌ Failed to send to %s (JID: %s): %v", 
+		log.Printf("[%s] ❌ Failed to send to %s (JID: %s): %v",
 			fromPhone, toPhone, recipientJID.String(), err)
 
 		// Check if this might be a proxy failure
@@ -1016,7 +1016,7 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 	acc.mu.Unlock()
 
 	log.Printf("[%s] ✅ Message sent to %s (JID: %s) | MessageID: %s | Timestamp: %s | session: %d, today: %d",
-		fromPhone, toPhone, recipientJID.String(), resp.ID, resp.Timestamp.Format("2006-01-02 15:04:05"), 
+		fromPhone, toPhone, recipientJID.String(), resp.ID, resp.Timestamp.Format("2006-01-02 15:04:05"),
 		acc.SessionMsgCount, acc.TotalMsgToday)
 
 	return &SendResult{
@@ -1237,15 +1237,15 @@ func addZeroWidthChars(text string) string {
 }
 
 // getRandomDelay returns 1-7 seconds + jitter (v9.0: updated for new sending mechanism)
-// Existing chat: 1-5 seconds, New contact: 3-7 seconds
+// Existing chat: 1-2 seconds, New contact: 1-3 seconds (reduced for 15-20 msg/min rate)
 func getRandomDelay(isExistingChat bool) time.Duration {
 	var base float64
 	if isExistingChat {
-		base = 1.0 + rand.Float64()*4.0 // 1-5 seconds for existing chat
+		base = 1.0 + rand.Float64()*1.0 // 1-2 seconds for existing chat
 	} else {
-		base = 3.0 + rand.Float64()*4.0 // 3-7 seconds for new contact
+		base = 1.0 + rand.Float64()*2.0 // 1-3 seconds for new contact (reduced from 3-7)
 	}
-	jitter := (rand.Float64() - 0.5) * 0.5 // -0.25 to +0.25
+	jitter := (rand.Float64() - 0.5) * 0.3 // -0.15 to +0.15
 	total := base + jitter
 	if total < 0.5 {
 		total = 0.5
@@ -1253,10 +1253,11 @@ func getRandomDelay(isExistingChat bool) time.Duration {
 	return time.Duration(total * float64(time.Second))
 }
 
-// getTypingDuration returns 1-3 seconds for typing simulation
+// getTypingDuration returns 0.5-1.5 seconds for typing simulation (reduced for faster rate)
 func getTypingDuration() time.Duration {
-	seconds := 1 + rand.Intn(3) // 1, 2, or 3 seconds
-	return time.Duration(seconds) * time.Second
+	// Reduced from 1-3 seconds to 0.5-1.5 seconds for faster sending rate
+	seconds := 500 + rand.Intn(1000) // 0.5-1.5 seconds in milliseconds
+	return time.Duration(seconds) * time.Millisecond
 }
 
 // getPauseDuration returns pause based on message count (v9.0)
