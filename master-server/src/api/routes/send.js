@@ -30,25 +30,25 @@ async function sendTelegramAlert(message) {
 // Helper function to normalize phone numbers
 function normalizePhone(phone) {
     if (!phone) return phone;
-    
+
     if (phone.startsWith('+')) {
         return phone;
     }
-    
+
     const cleaned = phone.replace(/\D/g, '');
-    
+
     if (cleaned.length >= 10) {
         if (cleaned.startsWith('972')) return '+' + cleaned;
         if (cleaned.startsWith('1') && cleaned.length === 11) return '+' + cleaned;
         if (cleaned.startsWith('44')) return '+' + cleaned;
         if (cleaned.startsWith('49')) return '+' + cleaned;
         if (cleaned.startsWith('33')) return '+' + cleaned;
-        
+
         if (cleaned.length >= 10) {
             return '+' + cleaned;
         }
     }
-    
+
     return '+' + cleaned;
 }
 
@@ -78,8 +78,7 @@ router.post('/', async (req, res, next) => {
             };
         });
 
-        console.log(`[Send] Received ${normalizedContacts.length} contacts, normalized phones:`, 
-            normalizedContacts.map(c => c.phone).join(', '));
+        console.log(`[Send] 📥 Received request: ${normalizedContacts.length} contacts`);
 
         // Create campaign
         let campaignId;
@@ -98,7 +97,7 @@ router.post('/', async (req, res, next) => {
         // Add messages to queue with priority
         // Priority: 10 for existing chats, 0 for new contacts
         const queueInserts = [];
-        
+
         for (const contact of normalizedContacts) {
             // Check if there's existing chat
             const existingChat = await query(`
@@ -127,7 +126,7 @@ router.post('/', async (req, res, next) => {
             `, [item.campaign_id, item.recipient_phone, item.recipient_name, item.message_template, item.priority]);
         }
 
-        console.log(`[Send] Added ${queueInserts.length} messages to queue for campaign ${campaignId}`);
+        console.log(`[Send] ✅ Added ${queueInserts.length} messages to queue | Campaign: ${campaignId}`);
 
         // Start queue processor if not running
         queueProcessor.start();

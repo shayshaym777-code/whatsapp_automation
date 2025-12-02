@@ -65,8 +65,17 @@ class QueueProcessor {
                 return;
             }
 
+            logger.info(`[QueueProcessor] 📤 Processing ${pendingCount} messages with ${availableSenders.length} senders`);
+
             // Sort contacts by priority (existing chats first)
             const contacts = await this.getContactsByPriority();
+            
+            if (contacts.length === 0) {
+                return;
+            }
+
+            let sentCount = 0;
+            let failedCount = 0;
 
             for (const contact of contacts) {
                 // Find best sender for this contact
@@ -77,14 +86,27 @@ class QueueProcessor {
                 }
 
                 // Send message
-                await this.sendMessage(sender, contact);
-
-                // Update sender availability
-                await this.updateSenderAfterSend(sender.phone);
+                const success = await this.sendMessage(sender, contact);
+                
+                if (success) {
+                    sentCount++;
+                    // Update sender availability
+                    await this.updateSenderAfterSend(sender.phone);
+                } else {
+                    failedCount++;
+                }
             }
 
+            // Log batch completion
+            if (sentCount > 0 || failedCount > 0) {
+                logger.info(`[QueueProcessor] 📊 Batch: ${sentCount} sent, ${failedCount} failed`);
+            }
+
+            // Check if campaign is complete
+            await this.checkCampaignCompletion();
+
         } catch (err) {
-            logger.error(`[QueueProcessor] Process error: ${err.message}`);
+            logger.error(`[QueueProcessor] ❌ Process error: ${err.message}`);
         } finally {
             this.isProcessing = false;
         }
@@ -309,7 +331,7 @@ class QueueProcessor {
         return score;
     }
 
-    // Send message
+    // Send message - returns true on success, false on failure
     async sendMessage(sender, contact) {
         try {
             // Mark as processing
@@ -346,12 +368,13 @@ class QueueProcessor {
                 `, [sender.phone, contact.recipient_phone]);
 
                 logger.info(`[QueueProcessor] ✅ Sent from ${sender.phone} to ${contact.recipient_phone}`);
+                return true;
             } else {
                 throw new Error('Worker did not confirm success');
             }
 
         } catch (err) {
-            logger.error(`[QueueProcessor] ❌ Failed to send ${contact.id}: ${err.message}`);
+            logger.error(`[QueueProcessor] ❌ Failed to send ${contact.id} (${contact.recipient_phone}): ${err.message}`);
 
             // Mark as failed
             await query(`
@@ -359,6 +382,8 @@ class QueueProcessor {
                 SET status = 'failed'
                 WHERE id = $1
             `, [contact.id]);
+            
+            return false;
         }
     }
 
@@ -370,9 +395,53 @@ class QueueProcessor {
                 messages_last_minute = messages_last_minute + 1,
                 messages_today = messages_today + 1,
                 total_messages_sent = COALESCE(total_messages_sent, 0) + 1,
+                successful_messages = COALESCE(successful_messages, 0) + 1,
                 last_message_at = NOW()
             WHERE phone = $1
         `, [senderPhone]);
+    }
+
+    // Check and log campaign completion
+    async checkCampaignCompletion() {
+        try {
+            const campaigns = await query(`
+                SELECT 
+                    c.id,
+                    c.total,
+                    COUNT(CASE WHEN q.status = 'sent' THEN 1 END) as sent,
+                    COUNT(CASE WHEN q.status = 'failed' THEN 1 END) as failed,
+                    COUNT(CASE WHEN q.status IN ('pending', 'processing') THEN 1 END) as pending
+                FROM campaigns c
+                LEFT JOIN message_queue q ON q.campaign_id = c.id
+                WHERE c.status = 'in_progress'
+                GROUP BY c.id, c.total
+                HAVING COUNT(CASE WHEN q.status IN ('pending', 'processing') THEN 1 END) = 0
+            `);
+
+            for (const campaign of campaigns.rows) {
+                // Mark campaign as completed
+                await query(`
+                    UPDATE campaigns
+                    SET status = 'completed', completed_at = NOW()
+                    WHERE id = $1
+                `, [campaign.id]);
+
+                logger.info(`[QueueProcessor] ✅ Campaign ${campaign.id} completed: ${campaign.sent}/${campaign.total} sent, ${campaign.failed} failed`);
+
+                // Send Telegram alert
+                const message = `✅ Campaign ${campaign.id} completed!\nSent: ${campaign.sent}/${campaign.total}\nFailed: ${campaign.failed}`;
+                try {
+                    await axios.post(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN || '8357127187:AAGdBAIC-4Kmu1JA5KmaPxJKhQc-htlvF9w'}/sendMessage`, {
+                        chat_id: process.env.TELEGRAM_CHAT_ID || '8014432452',
+                        text: message
+                    });
+                } catch (err) {
+                    // Ignore telegram errors
+                }
+            }
+        } catch (err) {
+            // Ignore errors in completion check
+        }
     }
 }
 
