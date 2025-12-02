@@ -101,17 +101,19 @@ class QueueProcessor {
             for (const contact of contacts) {
                 let messageSent = false;
                 let attempts = 0;
-                const maxImmediateRetries = 2; // Try up to 2 times immediately
+                const maxImmediateRetries = 3; // Try up to 3 times immediately before moving on
 
                 // Try to send with immediate retries
                 while (!messageSent && attempts < maxImmediateRetries) {
                     attempts++;
-
+                    
                     // Find best sender for this contact
                     const sender = await this.findBestSender(contact.recipient_phone, availableSenders);
 
                     if (!sender) {
-                        break; // No sender available - will retry in next batch
+                        // No sender available - will retry in next batch
+                        logger.info(`[QueueProcessor] ⏸️ No sender available for ${contact.recipient_phone} - will retry in next batch`);
+                        break;
                     }
 
                     // Send message
@@ -122,48 +124,55 @@ class QueueProcessor {
                         messageSent = true;
                         // Update sender availability
                         await this.updateSenderAfterSend(sender.phone);
+                        logger.info(`[QueueProcessor] ✅ Successfully sent to ${contact.recipient_phone} (attempt ${attempts})`);
                     } else {
-                        // Check if message was reset to pending for retry
+                        // Check message status after failure
                         const checkStatus = await query(`
                             SELECT status, retry_count FROM message_queue WHERE id = $1
                         `, [contact.id]);
 
                         const status = checkStatus.rows[0]?.status;
+                        const retryCount = checkStatus.rows[0]?.retry_count || 0;
 
-                        if (status === 'pending' && attempts < maxImmediateRetries) {
+                        if (status === 'failed') {
+                            // Message failed permanently (blocked or max retries)
+                            failedCount++;
+                            logger.error(`[QueueProcessor] ❌ Permanent failure for ${contact.recipient_phone} (retry count: ${retryCount})`);
+                            break;
+                        } else if (status === 'pending' && attempts < maxImmediateRetries) {
                             // Message was reset to pending - try again immediately
-                            logger.info(`[QueueProcessor] 🔄 Immediate retry ${attempts}/${maxImmediateRetries} for ${contact.recipient_phone}`);
+                            logger.info(`[QueueProcessor] 🔄 Immediate retry ${attempts}/${maxImmediateRetries} for ${contact.recipient_phone} (retry_count: ${retryCount})`);
                             // Small delay before retry (1-2 seconds)
                             await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000));
                             // Refresh contact data (retry_count might have changed)
                             const refreshedContact = await query(`
                                 SELECT id, recipient_phone, recipient_name, message_template, priority, campaign_id
-                                FROM message_queue WHERE id = $1
+                                FROM message_queue WHERE id = $1 AND status = 'pending'
                             `, [contact.id]);
                             if (refreshedContact.rows.length > 0) {
                                 Object.assign(contact, refreshedContact.rows[0]);
+                            } else {
+                                // Contact was removed or status changed - stop retrying
+                                break;
                             }
-                        } else if (status === 'failed') {
-                            // Message failed permanently
-                            failedCount++;
-                            break;
-                        } else if (status === 'pending') {
-                            // Will retry in next batch
-                            retryCount++;
+                        } else if (status === 'pending' && attempts >= maxImmediateRetries) {
+                            // Max immediate retries reached - will retry in next batch
+                            logger.info(`[QueueProcessor] ⏭️ Max immediate retries (${attempts}) reached for ${contact.recipient_phone} - will retry in next batch`);
                             break;
                         }
                     }
                 }
 
-                // If still not sent after immediate retries, it will be retried in next batch
-                if (!messageSent && attempts >= maxImmediateRetries) {
-                    const checkStatus = await query(`
+                // If still not sent after immediate retries, check final status
+                if (!messageSent) {
+                    const finalStatus = await query(`
                         SELECT status FROM message_queue WHERE id = $1
                     `, [contact.id]);
-
-                    if (checkStatus.rows[0]?.status === 'pending') {
+                    
+                    const status = finalStatus.rows[0]?.status;
+                    if (status === 'pending') {
                         retryCount++;
-                    } else if (checkStatus.rows[0]?.status === 'failed') {
+                    } else if (status === 'failed') {
                         failedCount++;
                     }
                 }
@@ -596,12 +605,12 @@ class QueueProcessor {
                 last_message_at = NOW()
             WHERE phone = $1
         `, [senderPhone]);
-        
+
         // Log if approaching limit (for monitoring)
         const accountStats = await query(`
             SELECT messages_last_minute FROM accounts WHERE phone = $1
         `, [senderPhone]);
-        
+
         const currentCount = accountStats.rows[0]?.messages_last_minute || 0;
         if (currentCount >= 14) {
             logger.warn(`[QueueProcessor] ⚠️ ${senderPhone} approaching limit: ${currentCount}/15 messages this minute`);
