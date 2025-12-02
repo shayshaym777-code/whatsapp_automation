@@ -271,7 +271,74 @@ class QueueProcessor {
             `, [account.phone]);
 
             if (dbAccount.rows.length === 0) {
-                continue;
+                // Account not in DB - create it automatically
+                logger.info(`[QueueProcessor] 🔍 Account ${account.phone} not in DB - creating automatically`);
+                try {
+                    await query(`
+                        INSERT INTO accounts (phone, created_at, messages_last_minute, last_message_minute_reset)
+                        VALUES ($1, NOW(), 0, NOW())
+                        ON CONFLICT (phone) DO NOTHING
+                    `, [account.phone]);
+                    
+                    // Retry getting account from DB
+                    const retryAccount = await query(`
+                        SELECT 
+                            phone,
+                            messages_last_minute,
+                            last_message_at,
+                            last_message_minute_reset,
+                            blocked_at,
+                            created_at,
+                            total_messages_sent,
+                            successful_messages
+                        FROM accounts
+                        WHERE phone = $1
+                    `, [account.phone]);
+                    
+                    if (retryAccount.rows.length === 0) {
+                        logger.warn(`[QueueProcessor] ⚠️ Failed to create account ${account.phone} in DB`);
+                        continue;
+                    }
+                    
+                    // Use the newly created account
+                    const acc = retryAccount.rows[0];
+                    
+                    // Check if available (skip blocked check for new accounts)
+                    let messagesLastMinute = acc.messages_last_minute || 0;
+                    const lastReset = acc.last_message_minute_reset ? new Date(acc.last_message_minute_reset) : new Date(0);
+                    const minutesSinceReset = (now - lastReset) / (1000 * 60);
+                    
+                    if (minutesSinceReset >= 1) {
+                        messagesLastMinute = 0;
+                    }
+                    
+                    if (messagesLastMinute >= 15) {
+                        continue;
+                    }
+                    
+                    if (acc.last_message_at) {
+                        const secondsSinceLastMessage = (now - new Date(acc.last_message_at)) / 1000;
+                        if (secondsSinceLastMessage < 4) {
+                            continue;
+                        }
+                    }
+                    
+                    available.push({
+                        phone: account.phone,
+                        worker_url: account.worker_url,
+                        messages_last_minute: messagesLastMinute,
+                        last_message_at: acc.last_message_at,
+                        created_at: acc.created_at,
+                        total_messages_sent: acc.total_messages_sent || 0,
+                        successful_messages: acc.successful_messages || 0
+                    });
+                    
+                    logger.info(`[QueueProcessor] ✅ Created and added account ${account.phone} to available senders`);
+                    continue;
+                } catch (err) {
+                    logger.error(`[QueueProcessor] ❌ Error creating account ${account.phone}: ${err.message}`);
+                    continue;
+                }
             }
 
             const acc = dbAccount.rows[0];
@@ -323,7 +390,7 @@ class QueueProcessor {
         }
 
         logger.info(`[QueueProcessor] 🔍 After filtering: ${available.length} available senders (from ${allAccounts.length} connected)`);
-        
+
         // If no senders available, log why
         if (available.length === 0 && allAccounts.length > 0) {
             logger.warn(`[QueueProcessor] ⚠️ All ${allAccounts.length} senders were filtered out. Reasons:`);
@@ -332,7 +399,7 @@ class QueueProcessor {
             let overLimitCount = 0;
             let cooldownCount = 0;
             let notInDbCount = 0;
-            
+
             for (const account of allAccounts) {
                 const dbAccount = await query(`
                     SELECT 
@@ -344,32 +411,32 @@ class QueueProcessor {
                     FROM accounts
                     WHERE phone = $1
                 `, [account.phone]);
-                
+
                 if (dbAccount.rows.length === 0) {
                     notInDbCount++;
                     continue;
                 }
-                
+
                 const acc = dbAccount.rows[0];
-                
+
                 if (acc.blocked_at && new Date(acc.blocked_at) > new Date(Date.now() - 48 * 60 * 60 * 1000)) {
                     blockedCount++;
                     continue;
                 }
-                
+
                 let messagesLastMinute = acc.messages_last_minute || 0;
                 const lastReset = acc.last_message_minute_reset ? new Date(acc.last_message_minute_reset) : new Date(0);
                 const minutesSinceReset = (now - lastReset) / (1000 * 60);
-                
+
                 if (minutesSinceReset >= 1) {
                     messagesLastMinute = 0;
                 }
-                
+
                 if (messagesLastMinute >= 15) {
                     overLimitCount++;
                     continue;
                 }
-                
+
                 if (acc.last_message_at) {
                     const secondsSinceLastMessage = (now - new Date(acc.last_message_at)) / 1000;
                     if (secondsSinceLastMessage < 4) {
@@ -378,10 +445,10 @@ class QueueProcessor {
                     }
                 }
             }
-            
+
             logger.warn(`[QueueProcessor] ⚠️ Filter reasons: ${blockedCount} blocked, ${overLimitCount} over limit (15/min), ${cooldownCount} in cooldown, ${notInDbCount} not in DB`);
         }
-        
+
         return available;
     }
 
