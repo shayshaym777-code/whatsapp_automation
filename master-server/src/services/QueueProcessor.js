@@ -450,6 +450,8 @@ class QueueProcessor {
                     DO UPDATE SET last_message_at = NOW()
                 `, [sender.phone, contact.recipient_phone]);
 
+                // Log sent number in green (prominent)
+                logger.info(`[QueueProcessor] 🟢 Sent to: ${contact.recipient_phone}`);
                 logger.info(`[QueueProcessor] ✅ Sent from ${sender.phone} to ${contact.recipient_phone}`);
                 return true;
             } else {
