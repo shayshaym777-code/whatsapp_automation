@@ -109,16 +109,37 @@ function AddAccount() {
         setPairingCode(null)
 
         try {
-            const data = await connectAccountWithPairingCode(cleanPhone, selectedWorker, true) // Always skip warmup in v8.0
+            // Send session_number to create worker for this session
+            const data = await connectAccountWithPairingCode(cleanPhone, selectedWorker, true, sessionNumber)
 
             if (data.pairing_code) {
                 setPairingCode(data.pairing_code)
                 setStatus('waiting')
                 // Start polling for connection status
-                startPolling(cleanPhone)
+                startPolling(cleanPhone, data.worker_id)
             } else if (data.status === 'already_connected') {
-                setStatus('success')
-                setTimeout(() => navigate('/accounts'), 2000)
+                // Double check - make sure it's really connected
+                // Wait a moment for the account to appear
+                await new Promise(resolve => setTimeout(resolve, 2000))
+                const accounts = await fetchAllAccounts()
+                const account = accounts.find(a => a.phone === cleanPhone)
+                
+                if (account && account.logged_in && account.connected) {
+                    setStatus('success')
+                    setExistingSessions(prev => {
+                        // Update session count if this is a new session
+                        const currentSessions = account.sessions_total || 1
+                        return Math.max(prev, currentSessions)
+                    })
+                    setTimeout(() => navigate('/accounts'), 2000)
+                } else {
+                    // Not really connected - show error
+                    setError(`Account is not connected. Status: logged_in=${account?.logged_in}, connected=${account?.connected}. Please try connecting again.`)
+                    setStatus('error')
+                }
+            } else {
+                setError(data.message || 'Unexpected response from server')
+                setStatus('error')
             }
         } catch (err) {
             setError(err.message)
@@ -128,7 +149,7 @@ function AddAccount() {
         }
     }
 
-    const startPolling = (cleanPhone) => {
+    const startPolling = (cleanPhone, workerId) => {
         let attempts = 0
         const maxAttempts = 60 // 5 minutes (every 5 seconds)
 
@@ -142,15 +163,24 @@ function AddAccount() {
             }
 
             try {
-                const res = await fetch(`/worker${selectedWorker.id.replace('worker-', '')}/accounts`)
+                // Check through master API (checks all workers)
+                const res = await fetch(`/api/accounts`)
                 const data = await res.json()
                 const account = data.accounts?.find(a => a.phone === cleanPhone)
 
-                if (account?.logged_in) {
+                // Make sure it's REALLY connected, not just logged_in
+                if (account?.logged_in && account?.connected) {
                     clearInterval(poll)
                     setStatus('success')
                     // Update session count
                     setExistingSessions(prev => prev + 1)
+                    setTimeout(() => navigate('/accounts'), 2000)
+                } else if (account?.logged_in && !account?.connected) {
+                    // Logged in but not connected - still waiting
+                    console.log(`Account ${cleanPhone} logged in but not connected yet... (attempt ${attempts}/${maxAttempts})`)
+                } else if (!account) {
+                    // Account not found yet - still waiting
+                    console.log(`Account ${cleanPhone} not found yet... (attempt ${attempts}/${maxAttempts})`)
                 }
             } catch (err) {
                 console.error('Polling error:', err)

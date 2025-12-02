@@ -33,10 +33,10 @@ app.get('/health', async (req, res) => {
         res.json({ status: 'ok', version: '9.0', timestamp: new Date().toISOString() });
     } catch (err) {
         logger.error(`[Health] Database check failed: ${err.message}`);
-        res.status(503).json({ 
-            status: 'error', 
+        res.status(503).json({
+            status: 'error',
             error: 'Database connection failed',
-            timestamp: new Date().toISOString() 
+            timestamp: new Date().toISOString()
         });
     }
 });

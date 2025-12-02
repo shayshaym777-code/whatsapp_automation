@@ -684,9 +684,20 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 		// Only log if state actually changed
 		wasConnected := acc.lastConnectedState
 		if wasConnected {
-			log.Printf("[%s] ❌ Disconnected from WhatsApp", phone)
-			// Send Telegram alert
-			go telegram.AlertDisconnected(phone, m.WorkerID, "Connection lost")
+			// Log detailed disconnection reason
+			disconnectReason := "Connection lost"
+			if v.Reason != nil {
+				disconnectReason = fmt.Sprintf("Disconnected: %v", v.Reason)
+			}
+			log.Printf("[%s] ❌ Disconnected from WhatsApp - Reason: %s", phone, disconnectReason)
+			
+			// Store detailed error
+			m.mu.Lock()
+			acc.LastError = disconnectReason
+			m.mu.Unlock()
+			
+			// Send Telegram alert with reason
+			go telegram.AlertDisconnected(phone, m.WorkerID, disconnectReason)
 		}
 		acc.Connected = false
 		acc.lastConnectedState = false
@@ -696,16 +707,26 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 		// Update health
 		if health := m.GetAccountHealth(phone); health != nil {
 			health.Status = StatusDisconnected
+			if v.Reason != nil {
+				health.LastError = fmt.Sprintf("Disconnected: %v", v.Reason)
+			} else {
+				health.LastError = "Connection lost"
+			}
 		}
 
-		// v8.0: Simple reconnect - 5-25 seconds delay
+		// Auto-reconnect immediately if account was logged in (has session)
+		// No need for QR/Pairing Code if session exists!
 		if acc.LoggedIn {
+			log.Printf("[%s] 🔄 Account has valid session - attempting auto-reconnect (no QR needed)", phone)
 			go func(p string) {
-				delay := time.Duration(rand.Intn(20)+5) * time.Second
-				log.Printf("[%s] Will attempt reconnect in %v", p, delay)
+				// Small delay to avoid immediate reconnect spam
+				delay := time.Duration(rand.Intn(5)+2) * time.Second
+				log.Printf("[%s] Will attempt auto-reconnect in %v (using existing session)", p, delay)
 				time.Sleep(delay)
 				m.attemptSmartReconnect(p)
 			}(phone)
+		} else {
+			log.Printf("[%s] ⚠️ Account not logged in - needs manual re-pairing (QR/Pairing Code)", phone)
 		}
 
 	case *events.KeepAliveTimeout:
@@ -1788,10 +1809,19 @@ func (m *ClientManager) GetAccountStats() []map[string]interface{} {
 			deliveryRate = float64(acc.MessagesDelivered) / float64(acc.MessagesSent) * 100
 		}
 
+		// Get health info for disconnection reason
+		health := m.GetAccountHealth(acc.Phone)
+		disconnectReason := acc.LastError
+		if health != nil && health.LastError != "" {
+			disconnectReason = health.LastError
+		}
+		
 		result = append(result, map[string]interface{}{
 			"phone":              acc.Phone,
 			"logged_in":          acc.LoggedIn,
 			"connected":          acc.Connected,
+			"last_error":         disconnectReason,
+			"consecutive_failures": acc.ConsecutiveFailures,
 			"session_msgs":       acc.SessionMsgCount,
 			"today_msgs":         acc.TotalMsgToday,
 			"messages_sent":      acc.MessagesSent,

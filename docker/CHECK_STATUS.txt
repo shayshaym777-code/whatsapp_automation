@@ -1,0 +1,11 @@
+# בדיקת סטטוס המערכת
+
+# 1. בדוק אם Master server רץ עם הקוד החדש
+docker compose logs --tail=20 master | grep -E "(QueueProcessor|Starting|Started|📥|✅|❌)"
+
+# 2. בדוק אם יש הודעות בתור
+docker compose exec -T postgres psql -U whatsapp -d whatsapp_automation -c "SELECT COUNT(*) as pending FROM message_queue WHERE status = 'pending';"
+
+# 3. בדוק כמה שולחים זמינים
+docker compose logs --tail=50 worker-1 | grep -E "(Connected|Disconnected|logged_in)" | tail -5
+

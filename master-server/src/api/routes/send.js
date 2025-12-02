@@ -137,7 +137,7 @@ router.post('/', async (req, res, next) => {
 
         // Count unique contacts
         const uniqueContacts = new Set(normalizedContacts.map(c => c.phone)).size;
-        
+
         // Check how many messages are already pending
         let alreadyPending = 0;
         try {
@@ -150,11 +150,11 @@ router.post('/', async (req, res, next) => {
         } catch (err) {
             // Table might not exist yet
         }
-        
+
         console.log(`[Send] 📥 Received request: ${normalizedContacts.length} contacts`);
         console.log(`[Send] ✅ Added ${queueInserts.length} messages to queue | Campaign: ${campaignId}`);
         console.log(`[Send] 📊 Contacts: ${uniqueContacts} unique | ${existingChatsCount} existing chats, ${newContactsCount} new`);
-        
+
         if (alreadyPending > 0) {
             console.log(`[Send] ⏳ ${alreadyPending} message(s) already waiting in queue`);
         }
