@@ -1,0 +1,2 @@
+cd ~/whatsapp_automation && git stash && cd docker && git pull origin main && docker compose up -d --build worker-1 worker-2 worker-3
+
