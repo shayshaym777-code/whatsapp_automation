@@ -55,6 +55,10 @@ class QueueProcessor {
             // Check if we have at least 2 messages waiting
             const pendingCount = await this.getPendingCount();
             if (pendingCount === null || pendingCount < 2) {
+                // Log if there are pending messages but less than 2
+                if (pendingCount !== null && pendingCount > 0) {
+                    logger.info(`[QueueProcessor] ⏳ ${pendingCount} message(s) waiting (need 2+ to start)`);
+                }
                 return; // Wait for more messages or table not ready
             }
 
@@ -408,7 +412,21 @@ class QueueProcessor {
             }
 
         } catch (err) {
-            logger.error(`[QueueProcessor] ❌ Failed to send ${contact.id} (${contact.recipient_phone}): ${err.message}`);
+            const errorMsg = err.message || err.toString();
+            
+            // Check if account is blocked
+            if (errorMsg.includes('blocked') || errorMsg.includes('banned') || errorMsg.includes('restricted')) {
+                logger.error(`[QueueProcessor] 🚨 BLOCKED: ${sender.phone} - Account blocked!`);
+                
+                // Mark account as blocked in DB
+                await query(`
+                    UPDATE accounts
+                    SET blocked_at = NOW()
+                    WHERE phone = $1
+                `, [sender.phone]);
+            }
+            
+            logger.error(`[QueueProcessor] ❌ Failed to send ${contact.id} (${contact.recipient_phone}) from ${sender.phone}: ${errorMsg}`);
 
             // Mark as failed
             await query(`
@@ -460,7 +478,7 @@ class QueueProcessor {
                     WHERE id = $1
                 `, [campaign.id]);
 
-                logger.info(`[QueueProcessor] ✅ Campaign ${campaign.id} completed: ${campaign.sent}/${campaign.total} sent, ${campaign.failed} failed`);
+                logger.info(`[QueueProcessor] ✅ Campaign ${campaign.id} COMPLETED: ${campaign.sent}/${campaign.total} sent, ${campaign.failed} failed`);
 
                 // Send Telegram alert
                 const message = `✅ Campaign ${campaign.id} completed!\nSent: ${campaign.sent}/${campaign.total}\nFailed: ${campaign.failed}`;
