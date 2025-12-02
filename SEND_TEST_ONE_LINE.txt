@@ -1,0 +1,2 @@
+$API_URL="http://130.94.113.203:5000/api/send"; $API_KEY="8a229939..."; $body=@{contacts=@(@{phone="+972502920643";name=""},@{phone="+972559786598";name=""},@{phone="+972509456568";name=""});message="Hello test message"}|ConvertTo-Json -Depth 10; $headers=@{"Content-Type"="application/json";"X-API-Key"=$API_KEY}; try { $r=Invoke-WebRequest -Uri $API_URL -Method POST -Headers $headers -Body $body -UseBasicParsing; Write-Host "✅ Success! Status: $($r.StatusCode)"; $r.Content|ConvertFrom-Json|ConvertTo-Json } catch { Write-Host "❌ Error: $($_.Exception.Message)" }
+
