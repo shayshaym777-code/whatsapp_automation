@@ -66,15 +66,15 @@ async function getHealthyAccountsFromWorkers() {
 // Helper function to normalize phone numbers
 function normalizePhone(phone) {
     if (!phone) return phone;
-    
+
     // If already has +, return as-is
     if (phone.startsWith('+')) {
         return phone;
     }
-    
+
     // Remove all non-numeric characters
     const cleaned = phone.replace(/\D/g, '');
-    
+
     // If starts with country code (e.g., 972, 1, 44), add +
     if (cleaned.length >= 10) {
         // Common country codes
@@ -83,32 +83,15 @@ function normalizePhone(phone) {
         if (cleaned.startsWith('44')) return '+' + cleaned; // UK
         if (cleaned.startsWith('49')) return '+' + cleaned; // Germany
         if (cleaned.startsWith('33')) return '+' + cleaned; // France
-        
+
         // If no country code detected but has 10+ digits, assume it needs +
         if (cleaned.length >= 10) {
             return '+' + cleaned;
         }
     }
-    
+
     // If can't determine, return with + anyway (let WhatsApp handle it)
     return '+' + cleaned;
-}
-
-// Helper function to clean message - remove timestamps and long numbers
-function cleanMessage(message) {
-    if (!message) return message;
-    
-    // Remove timestamps (13+ digit numbers) - these are Unix timestamps in milliseconds
-    // Pattern: 13+ consecutive digits (like 1764667831223)
-    let cleaned = message.replace(/\b\d{13,}\b/g, '');
-    
-    // Remove any trailing/leading spaces
-    cleaned = cleaned.trim();
-    
-    // Remove multiple spaces
-    cleaned = cleaned.replace(/\s+/g, ' ');
-    
-    return cleaned;
 }
 
 // POST /api/send - Main send endpoint
@@ -123,13 +106,6 @@ router.post('/', async (req, res, next) => {
         }
         if (!message) {
             return res.status(400).json({ error: 'message required' });
-        }
-
-        // Clean message - remove timestamps and long numbers that might be added by client
-        const cleanedMessage = cleanMessage(message);
-        
-        if (cleanedMessage !== message) {
-            console.log(`[Send] Cleaned message: removed timestamps/numbers. Original length: ${message.length}, Cleaned length: ${cleanedMessage.length}`);
         }
 
         // Normalize phone numbers - ensure they have + prefix
@@ -168,7 +144,7 @@ router.post('/', async (req, res, next) => {
                 INSERT INTO campaigns (total, message_template, status, started_at)
                 VALUES ($1, $2, 'in_progress', NOW())
                 RETURNING id
-            `, [normalizedContacts.length, cleanedMessage]);
+            `, [normalizedContacts.length, message]);
             campaignId = campaignResult.rows[0].id;
         } catch (dbErr) {
             console.error('[Send] DB error creating campaign:', dbErr.message);
@@ -198,7 +174,7 @@ router.post('/', async (req, res, next) => {
         }
 
         // 4. Start sending in background
-        processCampaign(campaignId, distribution, cleanedMessage);
+        processCampaign(campaignId, distribution, message);
 
         // 5. Return immediately
         res.json({
