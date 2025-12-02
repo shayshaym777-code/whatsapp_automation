@@ -135,6 +135,11 @@ class QueueProcessor {
             // Calculate total sending capacity
             const MESSAGES_PER_MINUTE_PER_SENDER = 15; // 15 messages per minute per device
             const totalCapacity = availableSenders.length * MESSAGES_PER_MINUTE_PER_SENDER;
+            
+            // Calculate current usage and remaining capacity
+            const totalUsed = availableSenders.reduce((sum, s) => sum + (s.messages_last_minute || 0), 0);
+            const totalRemaining = availableSenders.reduce((sum, s) => sum + (s.remaining_capacity || 0), 0);
+            
             // Count senders by worker for load balancing info
             const sendersByWorker = {};
             for (const sender of availableSenders) {
@@ -150,7 +155,19 @@ class QueueProcessor {
                 .map(([id, count]) => `${id}:${count}`)
                 .join(', ') || 'none';
 
-            logger.info(`[QueueProcessor] 📤 Processing ${pendingCount} messages (${uniqueContacts} contacts: ${contactsWithChat} existing, ${newContacts} new) with ${availableSenders.length} senders (capacity: ${totalCapacity} msg/min = ${availableSenders.length} × ${MESSAGES_PER_MINUTE_PER_SENDER}) | Workers: ${workerDistribution} | Distribution: ${distributionStatus}`);
+            logger.info(`[QueueProcessor] 📤 Processing ${pendingCount} messages (${uniqueContacts} contacts: ${contactsWithChat} existing, ${newContacts} new) with ${availableSenders.length} senders`);
+            logger.info(`[QueueProcessor] 📊 Capacity: ${totalCapacity} msg/min (${availableSenders.length} × ${MESSAGES_PER_MINUTE_PER_SENDER}) | Used: ${totalUsed}/${totalCapacity} | Remaining: ${totalRemaining} | Workers: ${workerDistribution} | Distribution: ${distributionStatus}`);
+
+            // Log detailed status for each sender (first 5 to avoid spam)
+            const sendersToLog = availableSenders.slice(0, 5);
+            sendersToLog.forEach(sender => {
+                const used = sender.messages_last_minute || 0;
+                const remaining = sender.remaining_capacity || 0;
+                logger.info(`[QueueProcessor] 📱 ${sender.phone}: ${used}/15 used, ${remaining} remaining`);
+            });
+            if (availableSenders.length > 5) {
+                logger.info(`[QueueProcessor] ... and ${availableSenders.length - 5} more senders`);
+            }
 
             // Sort contacts by priority (existing chats first)
             // Take up to availableSenders.length * 2 contacts to maximize parallel sending
@@ -192,7 +209,15 @@ class QueueProcessor {
                         messageSent = true;
                         // Update sender availability
                         await this.updateSenderAfterSend(sender.phone);
-                        logger.info(`[QueueProcessor] ✅ Successfully sent to ${contact.recipient_phone} (attempt ${attempts})`);
+
+                        // Get updated sender stats for logging
+                        const updatedStats = await query(`
+                            SELECT messages_last_minute FROM accounts WHERE phone = $1
+                        `, [sender.phone]);
+                        const currentUsed = updatedStats.rows[0]?.messages_last_minute || 0;
+                        const remaining = 15 - currentUsed;
+
+                        logger.info(`[QueueProcessor] ✅ [${sentCount}] Sent from ${sender.phone} to ${contact.recipient_phone} | ${sender.phone}: ${currentUsed}/15 used, ${remaining} remaining`);
                     } else {
                         // Wait a moment for DB update to complete
                         await new Promise(resolve => setTimeout(resolve, 100));
@@ -258,12 +283,17 @@ class QueueProcessor {
                 }
             }
 
-            // Log batch completion
+            // Log batch completion with detailed count
             if (sentCount > 0 || failedCount > 0 || retryCount > 0) {
-                let logMsg = `[QueueProcessor] 📊 Batch: ${sentCount} sent`;
-                if (failedCount > 0) logMsg += `, ${failedCount} failed`;
-                if (retryCount > 0) logMsg += `, ${retryCount} will retry`;
+                let logMsg = `[QueueProcessor] 📊 Batch Summary: ✅ ${sentCount} sent`;
+                if (failedCount > 0) logMsg += `, ❌ ${failedCount} failed`;
+                if (retryCount > 0) logMsg += `, 🔄 ${retryCount} will retry`;
                 logger.info(logMsg);
+
+                // Additional detailed log for sent messages
+                if (sentCount > 0) {
+                    logger.info(`[QueueProcessor] ✅ Total messages sent in this batch: ${sentCount}`);
+                }
             }
 
             // Check if campaign is complete
@@ -546,11 +576,15 @@ class QueueProcessor {
                 // 4. Cooldown removed - worker already handles delays (3-7 sec + typing 1-3 sec)
                 // The worker adds sufficient delays, so no need for additional cooldown here
 
+                // Calculate remaining capacity for this sender
+                const remainingCapacity = MESSAGES_PER_MINUTE_LIMIT - messagesLastMinute;
+
                 available.push({
                     phone: account.phone,
                     worker_url: account.worker_url,
                     worker_id: account.worker_id || 'unknown',
                     messages_last_minute: messagesLastMinute,
+                    remaining_capacity: remainingCapacity,
                     last_message_at: acc.last_message_at,
                     created_at: acc.created_at,
                     total_messages_sent: acc.total_messages_sent || 0,
@@ -715,9 +749,17 @@ class QueueProcessor {
                     DO UPDATE SET last_message_at = NOW()
                 `, [sender.phone, contact.recipient_phone]);
 
-                // Log sent number in green (prominent)
-                logger.info(`[QueueProcessor] 🟢 Sent to: ${contact.recipient_phone}`);
-                logger.info(`[QueueProcessor] ✅ Sent from ${sender.phone} to ${contact.recipient_phone}`);
+                // Get total sent count for this batch (will be updated by caller)
+                const totalSent = await query(`
+                    SELECT COUNT(*) as count FROM message_queue 
+                    WHERE status = 'sent' AND campaign_id = $1
+                `, [contact.campaign_id || null]);
+
+                const sentTotal = totalSent.rows[0]?.count || 0;
+
+                // Log sent number in green (prominent) with count
+                logger.info(`[QueueProcessor] 🟢 [${sentTotal}] Sent to: ${contact.recipient_phone}`);
+                logger.info(`[QueueProcessor] ✅ [${sentTotal}] Sent from ${sender.phone} to ${contact.recipient_phone}`);
                 return true;
             } else {
                 throw new Error('Worker did not confirm success');
@@ -881,9 +923,10 @@ class QueueProcessor {
                     WHERE id = $1
                 `, [campaign.id]);
 
-                // Log detailed completion summary
+                // Log detailed completion summary with prominent count
                 const successRate = campaign.total > 0 ? ((campaign.sent / campaign.total) * 100).toFixed(1) : 0;
                 logger.info(`[QueueProcessor] ✅ Campaign ${campaign.id} COMPLETED:`);
+                logger.info(`[QueueProcessor] ✅ Total messages sent: ${campaign.sent}`);
                 logger.info(`[QueueProcessor] 📊 Summary: ${campaign.sent}/${campaign.total} sent (${successRate}%), ${campaign.failed} failed`);
 
                 // Log failed numbers if any

@@ -244,7 +244,7 @@ func (m *ClientManager) ConnectAccount(ctx context.Context, phone string) (*Conn
 		return nil, fmt.Errorf("failed to create client with proxy: %w", err)
 	}
 
-	// Create account entry
+	// Create account entry - use phone+session key for multi-session support
 	acc := &AccountClient{
 		Phone:     phone,
 		Client:    client,
@@ -256,6 +256,7 @@ func (m *ClientManager) ConnectAccount(ctx context.Context, phone string) (*Conn
 	// Apply rest of metadata
 	m.applyAccountMeta(acc, meta)
 
+	// Store account (ConnectAccount always uses session 1)
 	m.accounts[phone] = acc
 
 	// Set up event handler
@@ -460,12 +461,21 @@ type ConnectResult struct {
 
 // ConnectWithPairingCode connects a WhatsApp account using pairing code method
 // This is faster and more reliable than QR code, especially in Docker environments
-func (m *ClientManager) ConnectWithPairingCode(ctx context.Context, phone string) (*ConnectResult, error) {
+// sessionNumber: 1-4, creates separate session file for each session
+func (m *ClientManager) ConnectWithPairingCode(ctx context.Context, phone string, sessionNumber int) (*ConnectResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Check if already connected
-	if acc, exists := m.accounts[phone]; exists && acc.Client != nil {
+	// Validate session number
+	if sessionNumber < 1 || sessionNumber > 4 {
+		sessionNumber = 1
+	}
+
+	// Create unique key for this phone+session combination
+	phoneSessionKey := fmt.Sprintf("%s-session-%d", phone, sessionNumber)
+
+	// Check if already connected (check by phone+session key)
+	if acc, exists := m.accounts[phoneSessionKey]; exists && acc.Client != nil {
 		if acc.Client.IsLoggedIn() {
 			return &ConnectResult{
 				Status:   "already_connected",
@@ -476,11 +486,18 @@ func (m *ClientManager) ConnectWithPairingCode(ctx context.Context, phone string
 		}
 	}
 
-	// Initialize session storage
-	dbPath := filepath.Join(getSessionsDir(), fmt.Sprintf("%s.db", sanitizePhone(phone)))
+	// Initialize session storage - separate file for each session
+	var dbPath string
+	if sessionNumber == 1 {
+		// Session 1 uses the standard path (backward compatible)
+		dbPath = filepath.Join(getSessionsDir(), fmt.Sprintf("%s.db", sanitizePhone(phone)))
+	} else {
+		// Sessions 2-4 use separate files
+		dbPath = filepath.Join(getSessionsDir(), fmt.Sprintf("%s-session-%d.db", sanitizePhone(phone), sessionNumber))
+	}
 	dbURI := fmt.Sprintf("file:%s?_foreign_keys=on", dbPath)
 
-	log.Printf("[%s] Initializing session storage for pairing code at %s", phone, dbPath)
+	log.Printf("[%s] Initializing session storage for pairing code (session %d) at %s", phone, sessionNumber, dbPath)
 
 	dbLog := waLog.Stdout("DB-"+phone, "INFO", true)
 	container, err := sqlstore.New(ctx, "sqlite3", dbURI, dbLog)
@@ -504,8 +521,16 @@ func (m *ClientManager) ConnectWithPairingCode(ctx context.Context, phone string
 		}
 	}
 
-	// Configure device properties based on fingerprint
-	osName := fmt.Sprintf("Windows %s", m.Fingerprint.ComputerName)
+	// Generate UNIQUE fingerprint for this session (different browser/profile)
+	// Each session needs a different fingerprint so WhatsApp thinks it's a different device
+	sessionSeed := fmt.Sprintf("%s-session-%d", m.Fingerprint.DeviceID, sessionNumber)
+	sessionFingerprint := fingerprint.Generate(sessionSeed, m.Fingerprint.ProxyCountry)
+
+	log.Printf("[%s] Session %d: Using unique fingerprint - DeviceID: %s, ComputerName: %s",
+		phone, sessionNumber, sessionFingerprint.DeviceID, sessionFingerprint.ComputerName)
+
+	// Configure device properties based on SESSION-specific fingerprint
+	osName := fmt.Sprintf("Windows %s", sessionFingerprint.ComputerName)
 	platform := waCompanionReg.DeviceProps_PlatformType(1) // Chrome
 	store.DeviceProps.PlatformType = &platform
 	store.DeviceProps.Os = &osName
@@ -686,16 +711,13 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 		if wasConnected {
 			// Log detailed disconnection reason
 			disconnectReason := "Connection lost"
-			if v.Reason != nil {
-				disconnectReason = fmt.Sprintf("Disconnected: %v", v.Reason)
-			}
 			log.Printf("[%s] ❌ Disconnected from WhatsApp - Reason: %s", phone, disconnectReason)
-			
+
 			// Store detailed error
 			m.mu.Lock()
 			acc.LastError = disconnectReason
 			m.mu.Unlock()
-			
+
 			// Send Telegram alert with reason
 			go telegram.AlertDisconnected(phone, m.WorkerID, disconnectReason)
 		}
@@ -707,11 +729,7 @@ func (m *ClientManager) handleEvent(phone string, evt interface{}) {
 		// Update health
 		if health := m.GetAccountHealth(phone); health != nil {
 			health.Status = StatusDisconnected
-			if v.Reason != nil {
-				health.LastError = fmt.Sprintf("Disconnected: %v", v.Reason)
-			} else {
-				health.LastError = "Connection lost"
-			}
+			health.LastError = "Connection lost"
 		}
 
 		// Auto-reconnect immediately if account was logged in (has session)
@@ -1815,19 +1833,19 @@ func (m *ClientManager) GetAccountStats() []map[string]interface{} {
 		if health != nil && health.LastError != "" {
 			disconnectReason = health.LastError
 		}
-		
+
 		result = append(result, map[string]interface{}{
-			"phone":              acc.Phone,
-			"logged_in":          acc.LoggedIn,
-			"connected":          acc.Connected,
-			"last_error":         disconnectReason,
+			"phone":                acc.Phone,
+			"logged_in":            acc.LoggedIn,
+			"connected":            acc.Connected,
+			"last_error":           disconnectReason,
 			"consecutive_failures": acc.ConsecutiveFailures,
-			"session_msgs":       acc.SessionMsgCount,
-			"today_msgs":         acc.TotalMsgToday,
-			"messages_sent":      acc.MessagesSent,
-			"messages_delivered": acc.MessagesDelivered,
-			"messages_failed":    acc.MessagesFailed,
-			"delivery_rate":      deliveryRate,
+			"session_msgs":         acc.SessionMsgCount,
+			"today_msgs":           acc.TotalMsgToday,
+			"messages_sent":        acc.MessagesSent,
+			"messages_delivered":   acc.MessagesDelivered,
+			"messages_failed":      acc.MessagesFailed,
+			"delivery_rate":        deliveryRate,
 		})
 		acc.mu.RUnlock()
 	}

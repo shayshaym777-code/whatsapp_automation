@@ -265,7 +265,8 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
-	result, err := s.client.ConnectWithPairingCode(ctx, req.Phone)
+	// Pass session_number to create separate session file
+	result, err := s.client.ConnectWithPairingCode(ctx, req.Phone, req.SessionNumber)
 	if err != nil {
 		log.Printf("[PAIR] Error for %s session %d: %v", req.Phone, req.SessionNumber, err)
 		writeError(w, http.StatusInternalServerError, err.Error())
