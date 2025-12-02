@@ -156,14 +156,19 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
+	// Log detailed request info
+	log.Printf("[SEND] 📤 Request: from=%s to=%s name=%q message_len=%d", 
+		req.FromPhone, req.ToPhone, req.Name, len(req.Message))
+
 	result, err := s.client.SendMessage(ctx, req.FromPhone, req.ToPhone, req.Message, req.Name)
 	if err != nil {
-		log.Printf("[SEND] Error from %s to %s: %v", req.FromPhone, req.ToPhone, err)
+		log.Printf("[SEND] ❌ Error from %s to %s: %v", req.FromPhone, req.ToPhone, err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	log.Printf("[SEND] ✅ %s → %s", req.FromPhone, req.ToPhone)
+	log.Printf("[SEND] ✅ %s → %s | MessageID: %s | Timestamp: %d", 
+		req.FromPhone, req.ToPhone, result.MessageID, result.Timestamp)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"success":    true,

@@ -63,6 +63,37 @@ async function getHealthyAccountsFromWorkers() {
     return allAccounts;
 }
 
+// Helper function to normalize phone numbers
+function normalizePhone(phone) {
+    if (!phone) return phone;
+    
+    // If already has +, return as-is
+    if (phone.startsWith('+')) {
+        return phone;
+    }
+    
+    // Remove all non-numeric characters
+    const cleaned = phone.replace(/\D/g, '');
+    
+    // If starts with country code (e.g., 972, 1, 44), add +
+    if (cleaned.length >= 10) {
+        // Common country codes
+        if (cleaned.startsWith('972')) return '+' + cleaned; // Israel
+        if (cleaned.startsWith('1') && cleaned.length === 11) return '+' + cleaned; // US/Canada
+        if (cleaned.startsWith('44')) return '+' + cleaned; // UK
+        if (cleaned.startsWith('49')) return '+' + cleaned; // Germany
+        if (cleaned.startsWith('33')) return '+' + cleaned; // France
+        
+        // If no country code detected but has 10+ digits, assume it needs +
+        if (cleaned.length >= 10) {
+            return '+' + cleaned;
+        }
+    }
+    
+    // If can't determine, return with + anyway (let WhatsApp handle it)
+    return '+' + cleaned;
+}
+
 // POST /api/send - Main send endpoint
 // Distributes contacts EVENLY among ALL healthy accounts
 // No country restrictions - any phone sends to any destination
@@ -76,6 +107,23 @@ router.post('/', async (req, res, next) => {
         if (!message) {
             return res.status(400).json({ error: 'message required' });
         }
+
+        // Normalize phone numbers - ensure they have + prefix
+        const normalizedContacts = contacts.map(contact => {
+            if (typeof contact === 'object') {
+                return {
+                    phone: normalizePhone(contact.phone),
+                    name: contact.name || ''
+                };
+            }
+            return {
+                phone: normalizePhone(contact),
+                name: ''
+            };
+        });
+
+        console.log(`[Send] Received ${normalizedContacts.length} contacts, normalized phones:`, 
+            normalizedContacts.map(c => c.phone).join(', '));
 
         // 1. Get ALL healthy accounts from ALL workers
         const accounts = await getHealthyAccountsFromWorkers();
@@ -96,7 +144,7 @@ router.post('/', async (req, res, next) => {
                 INSERT INTO campaigns (total, message_template, status, started_at)
                 VALUES ($1, $2, 'in_progress', NOW())
                 RETURNING id
-            `, [contacts.length, message]);
+            `, [normalizedContacts.length, message]);
             campaignId = campaignResult.rows[0].id;
         } catch (dbErr) {
             console.error('[Send] DB error creating campaign:', dbErr.message);
@@ -105,22 +153,22 @@ router.post('/', async (req, res, next) => {
 
         // 3. Distribute contacts EVENLY among ALL accounts
         // No country filtering - any phone sends to any destination
-        const perAccount = Math.ceil(contacts.length / accounts.length);
+        const perAccount = Math.ceil(normalizedContacts.length / accounts.length);
         const distribution = {};
         let contactIndex = 0;
 
         for (const account of accounts) {
-            const count = Math.min(perAccount, contacts.length - contactIndex);
+            const count = Math.min(perAccount, normalizedContacts.length - contactIndex);
             if (count > 0) {
                 distribution[account.phone] = {
-                    contacts: contacts.slice(contactIndex, contactIndex + count),
+                    contacts: normalizedContacts.slice(contactIndex, contactIndex + count),
                     worker_url: account.worker_url
                 };
                 contactIndex += count;
             }
         }
 
-        console.log(`[Campaign ${campaignId}] Distributing ${contacts.length} contacts to ${accounts.length} accounts:`);
+        console.log(`[Campaign ${campaignId}] Distributing ${normalizedContacts.length} contacts to ${accounts.length} accounts:`);
         for (const [phone, data] of Object.entries(distribution)) {
             console.log(`  - ${phone}: ${data.contacts.length} contacts`);
         }
@@ -132,7 +180,7 @@ router.post('/', async (req, res, next) => {
         res.json({
             success: true,
             campaign_id: campaignId,
-            total: contacts.length,
+            total: normalizedContacts.length,
             accounts_used: accounts.length,
             distribution: Object.fromEntries(
                 Object.entries(distribution).map(([phone, data]) => [phone, data.contacts.length])
@@ -157,8 +205,22 @@ async function processCampaign(campaignId, distribution, message) {
                 const toPhone = typeof contact === 'object' ? contact.phone : contact;
                 const name = typeof contact === 'object' ? (contact.name || '') : '';
 
+                // Validate phone number format
+                if (!toPhone || !toPhone.startsWith('+')) {
+                    failed++;
+                    const errorMsg = `Invalid phone format: ${toPhone} (must start with +)`;
+                    console.error(`[Campaign ${campaignId}] ❌ ${errorMsg}`);
+                    try {
+                        await query(`
+                            INSERT INTO send_log (campaign_id, phone, recipient, status, error)
+                            VALUES ($1, $2, $3, 'FAILED', $4)
+                        `, [campaignId, phone, toPhone, errorMsg]);
+                    } catch (e) { }
+                    continue;
+                }
+
                 // Send to worker and check response
-                console.log(`[Campaign ${campaignId}] 📤 Sending from ${phone} to ${toPhone} via ${data.worker_url}`);
+                console.log(`[Campaign ${campaignId}] 📤 Sending from ${phone} to ${toPhone} (name: "${name}") via ${data.worker_url}`);
 
                 const response = await axios.post(`${data.worker_url}/send`, {
                     from_phone: phone,

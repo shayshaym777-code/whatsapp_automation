@@ -979,6 +979,10 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 		Conversation: proto.String(variedMessage),
 	}
 
+	// Log before sending
+	log.Printf("[%s] 📤 Sending message to JID: %s (phone: %s) | Message length: %d chars | Name: %q",
+		fromPhone, recipientJID.String(), toPhone, len(variedMessage), contactName)
+
 	// Send message
 	resp, err := acc.Client.SendMessage(ctx, recipientJID, msg)
 
@@ -991,6 +995,9 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 		acc.MessagesFailed++
 		acc.MessagesSent++
 		acc.mu.Unlock()
+
+		log.Printf("[%s] ❌ Failed to send to %s (JID: %s): %v", 
+			fromPhone, toPhone, recipientJID.String(), err)
 
 		// Check if this might be a proxy failure
 		if isProxyError(err) {
@@ -1006,8 +1013,9 @@ func (m *ClientManager) SendMessage(ctx context.Context, fromPhone, toPhone, mes
 	acc.MessagesSent++
 	acc.mu.Unlock()
 
-	log.Printf("[%s] ✅ Message sent to %s (session: %d, today: %d)",
-		fromPhone, toPhone, acc.SessionMsgCount, acc.TotalMsgToday)
+	log.Printf("[%s] ✅ Message sent to %s (JID: %s) | MessageID: %s | Timestamp: %s | session: %d, today: %d",
+		fromPhone, toPhone, recipientJID.String(), resp.ID, resp.Timestamp.Format("2006-01-02 15:04:05"), 
+		acc.SessionMsgCount, acc.TotalMsgToday)
 
 	return &SendResult{
 		MessageID: resp.ID,
