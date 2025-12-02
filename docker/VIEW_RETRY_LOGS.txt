@@ -1,0 +1,2 @@
+docker compose logs -f master | grep --line-buffered -E "(🔄|Retry|retry|Failed|failed|❌|✅ Sent|🟢 Sent)"
+
