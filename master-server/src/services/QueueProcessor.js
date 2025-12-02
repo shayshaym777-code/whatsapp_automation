@@ -54,11 +54,18 @@ class QueueProcessor {
 
             // Check if we have at least 2 messages waiting
             const pendingCount = await this.getPendingCount();
+            
+            // Always log when checking (for debugging)
+            if (pendingCount !== null && pendingCount > 0) {
+                logger.info(`[QueueProcessor] 🔍 Checking queue: ${pendingCount} message(s) pending`);
+            }
+            
             if (pendingCount === null || pendingCount < 2) {
                 // Log if there are pending messages but less than 2
                 if (pendingCount !== null && pendingCount > 0) {
                     logger.info(`[QueueProcessor] ⏳ ${pendingCount} message(s) waiting (need 2+ to start)`);
                 }
+                this.isProcessing = false;
                 return; // Wait for more messages or table not ready
             }
 
@@ -70,7 +77,8 @@ class QueueProcessor {
             // Get available senders
             const availableSenders = await this.getAvailableSenders();
             if (availableSenders.length === 0) {
-                logger.warn('[QueueProcessor] ⚠️ No available senders');
+                logger.warn('[QueueProcessor] ⚠️ No available senders - cannot process queue');
+                this.isProcessing = false;
                 return;
             }
 
@@ -78,8 +86,10 @@ class QueueProcessor {
 
             // Sort contacts by priority (existing chats first)
             const contacts = await this.getContactsByPriority();
-
+            
             if (contacts.length === 0) {
+                logger.warn('[QueueProcessor] ⚠️ No contacts found in queue (but pendingCount > 0)');
+                this.isProcessing = false;
                 return;
             }
 
@@ -116,6 +126,7 @@ class QueueProcessor {
 
         } catch (err) {
             logger.error(`[QueueProcessor] ❌ Process error: ${err.message}`);
+            logger.error(`[QueueProcessor] ❌ Error stack: ${err.stack}`);
         } finally {
             this.isProcessing = false;
         }
