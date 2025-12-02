@@ -36,15 +36,15 @@ async function sendTelegramAlert(message) {
 // No country filtering - any phone can send to any destination
 async function getHealthyAccountsFromWorkers() {
     const allAccounts = [];
-    
+
     for (const worker of WORKERS) {
         try {
             const response = await axios.get(`${worker.url}/accounts`, { timeout: 5000 });
             const accounts = response.data.accounts || [];
-            
+
             // Filter only connected & logged in accounts
             const healthyAccounts = accounts.filter(a => a.connected && a.logged_in);
-            
+
             // Add worker info to each account
             healthyAccounts.forEach(acc => {
                 allAccounts.push({
@@ -53,13 +53,13 @@ async function getHealthyAccountsFromWorkers() {
                     worker_url: worker.url
                 });
             });
-            
+
             console.log(`[Send] Worker ${worker.id}: ${healthyAccounts.length} healthy accounts`);
         } catch (err) {
             console.error(`[Send] Failed to get accounts from ${worker.id}:`, err.message);
         }
     }
-    
+
     return allAccounts;
 }
 
@@ -172,7 +172,7 @@ async function processCampaign(campaignId, distribution, message) {
                         INSERT INTO send_log (campaign_id, phone, recipient, status)
                         VALUES ($1, $2, $3, 'SENT')
                     `, [campaignId, phone, toPhone]);
-                } catch (e) {}
+                } catch (e) { }
 
             } catch (err) {
                 failed++;
@@ -183,7 +183,7 @@ async function processCampaign(campaignId, distribution, message) {
                         INSERT INTO send_log (campaign_id, phone, recipient, status, error)
                         VALUES ($1, $2, $3, 'FAILED', $4)
                     `, [campaignId, phone, typeof contact === 'object' ? contact.phone : contact, err.message]);
-                } catch (e) {}
+                } catch (e) { }
             }
         }
     });
@@ -198,7 +198,7 @@ async function processCampaign(campaignId, distribution, message) {
             SET status = 'completed', sent = $1, failed = $2, completed_at = NOW()
             WHERE id = $3
         `, [sent, failed, campaignId]);
-    } catch (e) {}
+    } catch (e) { }
 
     // Send completion alert
     const durationStr = duration > 60 ? `${Math.floor(duration / 60)}m ${duration % 60}s` : `${duration}s`;
@@ -211,7 +211,7 @@ async function processCampaign(campaignId, distribution, message) {
 router.get('/status', async (req, res, next) => {
     try {
         const accounts = await getHealthyAccountsFromWorkers();
-        
+
         res.json({
             healthy_accounts: accounts.length,
             messages_per_minute: accounts.length * 22, // ~22 msgs/min per device

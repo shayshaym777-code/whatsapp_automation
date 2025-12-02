@@ -18,16 +18,16 @@ const WORKERS = [
 router.get('/', async (req, res, next) => {
     try {
         const allAccounts = [];
-        
+
         for (const worker of WORKERS) {
             try {
                 const response = await axios.get(`${worker.url}/accounts`, { timeout: 5000 });
                 const accounts = response.data.accounts || [];
-                
+
                 accounts.forEach(acc => {
                     // Determine status: CONNECTED if logged_in and connected
                     const status = (acc.connected && acc.logged_in) ? 'CONNECTED' : 'DISCONNECTED';
-                    
+
                     allAccounts.push({
                         phone: acc.phone,
                         status: status,
@@ -40,7 +40,7 @@ router.get('/', async (req, res, next) => {
                         worker_id: worker.id
                     });
                 });
-                
+
             } catch (err) {
                 console.error(`[Accounts] Failed to get from ${worker.id}:`, err.message);
             }
@@ -64,7 +64,7 @@ router.get('/', async (req, res, next) => {
 router.get('/:phone', async (req, res, next) => {
     try {
         const phone = req.params.phone;
-        
+
         for (const worker of WORKERS) {
             try {
                 const response = await axios.get(`${worker.url}/accounts/${phone}`, { timeout: 5000 });
@@ -84,7 +84,7 @@ router.get('/:phone', async (req, res, next) => {
                 // Try next worker
             }
         }
-        
+
         res.status(404).json({ error: 'Account not found' });
     } catch (err) {
         next(err);
@@ -120,7 +120,7 @@ router.post('/pair', async (req, res, next) => {
 router.post('/:phone/disconnect', async (req, res, next) => {
     try {
         const phone = req.params.phone;
-        
+
         // Try to disconnect from all workers
         for (const worker of WORKERS) {
             try {
@@ -129,7 +129,7 @@ router.post('/:phone/disconnect', async (req, res, next) => {
                 // Ignore errors, try all workers
             }
         }
-        
+
         res.json({ success: true, message: 'Disconnect request sent' });
     } catch (err) {
         next(err);
@@ -140,7 +140,7 @@ router.post('/:phone/disconnect', async (req, res, next) => {
 router.post('/:phone/reconnect', async (req, res, next) => {
     try {
         const phone = req.params.phone;
-        
+
         // Try to reconnect from all workers
         for (const worker of WORKERS) {
             try {
@@ -149,7 +149,7 @@ router.post('/:phone/reconnect', async (req, res, next) => {
                 // Ignore errors, try all workers
             }
         }
-        
+
         res.json({ success: true, message: 'Reconnect request sent' });
     } catch (err) {
         next(err);
@@ -160,7 +160,7 @@ router.post('/:phone/reconnect', async (req, res, next) => {
 router.delete('/:phone', async (req, res, next) => {
     try {
         const phone = req.params.phone;
-        
+
         // Try to delete from all workers
         for (const worker of WORKERS) {
             try {
@@ -169,7 +169,7 @@ router.delete('/:phone', async (req, res, next) => {
                 // Ignore errors, try all workers
             }
         }
-        
+
         res.json({ success: true, message: 'Account deleted' });
     } catch (err) {
         next(err);

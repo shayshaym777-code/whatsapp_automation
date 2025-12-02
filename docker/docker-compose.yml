@@ -154,9 +154,9 @@ services:
       PROXY_HOST: ${PROXY_HOST:-geo.iproyal.com}
       PROXY_PORT: ${PROXY_PORT:-12321}
       PROXY_USER: ${PROXY_USER:-8ou9yomVguVTDM5q}
-      PROXY_PASS: ${WORKER_1_PROXY_PASS:-k5CuWpGcfNEZZX23_country-us_session-VyOjwz28_lifetime-168h_streaming-1}
+      PROXY_PASS: ${WORKER_1_PROXY_PASS:-k5CuWpGcfNEZZX23_country-us_session-EkOwRNjU_lifetime-168h_streaming-1}
       PROXY_TYPE: ${PROXY_TYPE:-socks5}
-      # 17 US proxies with 7-day sticky sessions
+      # 34 US proxies with 7-day sticky sessions
       PROXY_LIST: ${WORKER_1_PROXY_LIST:-}
     volumes:
       - worker1_sessions:/data/sessions
@@ -198,9 +198,9 @@ services:
       PROXY_HOST: ${PROXY_HOST:-geo.iproyal.com}
       PROXY_PORT: ${PROXY_PORT:-12321}
       PROXY_USER: ${PROXY_USER:-8ou9yomVguVTDM5q}
-      PROXY_PASS: ${WORKER_2_PROXY_PASS:-k5CuWpGcfNEZZX23_country-us_session-Xpa9hGuo_lifetime-168h_streaming-1}
+      PROXY_PASS: ${WORKER_2_PROXY_PASS:-k5CuWpGcfNEZZX23_country-us_session-TjYg2WZA_lifetime-168h_streaming-1}
       PROXY_TYPE: ${PROXY_TYPE:-socks5}
-      # 17 US proxies with 7-day sticky sessions
+      # 33 US proxies with 7-day sticky sessions
       PROXY_LIST: ${WORKER_2_PROXY_LIST:-}
     volumes:
       - worker2_sessions:/data/sessions
@@ -242,9 +242,9 @@ services:
       PROXY_HOST: ${PROXY_HOST:-geo.iproyal.com}
       PROXY_PORT: ${PROXY_PORT:-12321}
       PROXY_USER: ${PROXY_USER:-8ou9yomVguVTDM5q}
-      PROXY_PASS: ${WORKER_3_PROXY_PASS:-k5CuWpGcfNEZZX23_country-us_session-sFuWBrVR_lifetime-168h_streaming-1}
+      PROXY_PASS: ${WORKER_3_PROXY_PASS:-k5CuWpGcfNEZZX23_country-us_session-3fMF3yeL_lifetime-168h_streaming-1}
       PROXY_TYPE: ${PROXY_TYPE:-socks5}
-      # 16 US proxies with 7-day sticky sessions
+      # 33 US proxies with 7-day sticky sessions
       PROXY_LIST: ${WORKER_3_PROXY_LIST:-}
     volumes:
       - worker3_sessions:/data/sessions
