@@ -26,8 +26,19 @@ app.use(express.json({ limit: '10mb' }));
 app.use(requestLogger);
 
 // Health check (no auth required)
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', version: '8.0', timestamp: new Date().toISOString() });
+app.get('/health', async (req, res) => {
+    try {
+        // Check database connection
+        await query('SELECT 1');
+        res.json({ status: 'ok', version: '9.0', timestamp: new Date().toISOString() });
+    } catch (err) {
+        logger.error(`[Health] Database check failed: ${err.message}`);
+        res.status(503).json({ 
+            status: 'error', 
+            error: 'Database connection failed',
+            timestamp: new Date().toISOString() 
+        });
+    }
 });
 
 // API Routes (protected with API key)
@@ -89,7 +100,7 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
     logger.info(`🚀 Master server v9.0 started on port ${PORT}`);
     scheduleDailyReset();
-    
+
     // Start queue processor
     queueProcessor.start();
     logger.info('[QueueProcessor] Started');
