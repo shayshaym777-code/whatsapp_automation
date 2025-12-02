@@ -10,6 +10,7 @@ class QueueProcessor {
     constructor() {
         this.isProcessing = false;
         this.processingInterval = null;
+        this.lastTableErrorLog = null;
         this.workers = [
             { id: 'worker-1', url: process.env.WORKER_1_URL || 'http://worker-1:3001' },
             { id: 'worker-2', url: process.env.WORKER_2_URL || 'http://worker-2:3002' },
@@ -53,8 +54,8 @@ class QueueProcessor {
 
             // Check if we have at least 2 messages waiting
             const pendingCount = await this.getPendingCount();
-            if (pendingCount < 2) {
-                return; // Wait for more messages
+            if (pendingCount === null || pendingCount < 2) {
+                return; // Wait for more messages or table not ready
             }
 
             // Get available senders
@@ -99,10 +100,15 @@ class QueueProcessor {
             `);
             return parseInt(result.rows[0].count);
         } catch (err) {
-            // If table doesn't exist yet, return 0 (will retry later)
+            // If table doesn't exist yet, return null (will retry later)
             if (err.message && err.message.includes('does not exist')) {
-                logger.warn('[QueueProcessor] message_queue table not found, waiting for migration...');
-                return 0;
+                // Only log once per minute to avoid spam
+                const now = Date.now();
+                if (!this.lastTableErrorLog || (now - this.lastTableErrorLog) > 60000) {
+                    logger.warn('[QueueProcessor] message_queue table not found, waiting for migration...');
+                    this.lastTableErrorLog = now;
+                }
+                return null;
             }
             throw err;
         }
