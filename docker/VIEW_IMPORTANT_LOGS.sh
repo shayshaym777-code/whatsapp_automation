@@ -1,0 +1,5 @@
+#!/bin/bash
+# View only important logs: requests, sending, errors, completion
+
+docker compose logs -f master worker-1 worker-2 worker-3 | grep -E "(📥 Received|✅ Added|📤 Processing|✅ Sent|❌ Failed|📊 Batch|✅ Campaign.*completed|Error|error)" --line-buffered
+
