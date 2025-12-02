@@ -1,0 +1,2 @@
+docker compose logs -f master | grep --line-buffered "🟢 Sent to:" | sed 's/.*🟢 Sent to: //'
+
