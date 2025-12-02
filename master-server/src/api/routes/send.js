@@ -94,6 +94,23 @@ function normalizePhone(phone) {
     return '+' + cleaned;
 }
 
+// Helper function to clean message - remove timestamps and long numbers
+function cleanMessage(message) {
+    if (!message) return message;
+    
+    // Remove timestamps (13+ digit numbers) - these are Unix timestamps in milliseconds
+    // Pattern: 13+ consecutive digits (like 1764667831223)
+    let cleaned = message.replace(/\b\d{13,}\b/g, '');
+    
+    // Remove any trailing/leading spaces
+    cleaned = cleaned.trim();
+    
+    // Remove multiple spaces
+    cleaned = cleaned.replace(/\s+/g, ' ');
+    
+    return cleaned;
+}
+
 // POST /api/send - Main send endpoint
 // Distributes contacts EVENLY among ALL healthy accounts
 // No country restrictions - any phone sends to any destination
@@ -106,6 +123,13 @@ router.post('/', async (req, res, next) => {
         }
         if (!message) {
             return res.status(400).json({ error: 'message required' });
+        }
+
+        // Clean message - remove timestamps and long numbers that might be added by client
+        const cleanedMessage = cleanMessage(message);
+        
+        if (cleanedMessage !== message) {
+            console.log(`[Send] Cleaned message: removed timestamps/numbers. Original length: ${message.length}, Cleaned length: ${cleanedMessage.length}`);
         }
 
         // Normalize phone numbers - ensure they have + prefix
@@ -122,7 +146,7 @@ router.post('/', async (req, res, next) => {
             };
         });
 
-        console.log(`[Send] Received ${normalizedContacts.length} contacts, normalized phones:`, 
+        console.log(`[Send] Received ${normalizedContacts.length} contacts, normalized phones:`,
             normalizedContacts.map(c => c.phone).join(', '));
 
         // 1. Get ALL healthy accounts from ALL workers
@@ -144,7 +168,7 @@ router.post('/', async (req, res, next) => {
                 INSERT INTO campaigns (total, message_template, status, started_at)
                 VALUES ($1, $2, 'in_progress', NOW())
                 RETURNING id
-            `, [normalizedContacts.length, message]);
+            `, [normalizedContacts.length, cleanedMessage]);
             campaignId = campaignResult.rows[0].id;
         } catch (dbErr) {
             console.error('[Send] DB error creating campaign:', dbErr.message);
@@ -174,7 +198,7 @@ router.post('/', async (req, res, next) => {
         }
 
         // 4. Start sending in background
-        processCampaign(campaignId, distribution, message);
+        processCampaign(campaignId, distribution, cleanedMessage);
 
         // 5. Return immediately
         res.json({
