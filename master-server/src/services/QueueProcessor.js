@@ -80,7 +80,9 @@ class QueueProcessor {
                 return;
             }
 
-            logger.info(`[QueueProcessor] 📤 Processing ${pendingCount} messages (${uniqueContacts} contacts: ${contactsWithChat} existing, ${newContacts} new) with ${availableSenders.length} senders`);
+            // Calculate total sending capacity
+            const totalCapacity = availableSenders.length * 15; // 15 messages per minute per sender
+            logger.info(`[QueueProcessor] 📤 Processing ${pendingCount} messages (${uniqueContacts} contacts: ${contactsWithChat} existing, ${newContacts} new) with ${availableSenders.length} senders (capacity: ${totalCapacity} msg/min)`);
 
             // Sort contacts by priority (existing chats first)
             // Take up to availableSenders.length * 2 contacts to maximize parallel sending
@@ -104,7 +106,7 @@ class QueueProcessor {
                 // Try to send with immediate retries
                 while (!messageSent && attempts < maxImmediateRetries) {
                     attempts++;
-                    
+
                     // Find best sender for this contact
                     const sender = await this.findBestSender(contact.recipient_phone, availableSenders);
 
@@ -125,9 +127,9 @@ class QueueProcessor {
                         const checkStatus = await query(`
                             SELECT status, retry_count FROM message_queue WHERE id = $1
                         `, [contact.id]);
-                        
+
                         const status = checkStatus.rows[0]?.status;
-                        
+
                         if (status === 'pending' && attempts < maxImmediateRetries) {
                             // Message was reset to pending - try again immediately
                             logger.info(`[QueueProcessor] 🔄 Immediate retry ${attempts}/${maxImmediateRetries} for ${contact.recipient_phone}`);
@@ -158,7 +160,7 @@ class QueueProcessor {
                     const checkStatus = await query(`
                         SELECT status FROM message_queue WHERE id = $1
                     `, [contact.id]);
-                    
+
                     if (checkStatus.rows[0]?.status === 'pending') {
                         retryCount++;
                     } else if (checkStatus.rows[0]?.status === 'failed') {
@@ -365,7 +367,7 @@ class QueueProcessor {
                 const minutesSinceReset = (now - lastReset) / (1000 * 60);
 
                 if (minutesSinceReset >= 1) {
-                    // Reset counter
+                    // Reset counter after 1 minute (allows 15 messages per minute per sender)
                     await query(`
                         UPDATE accounts
                         SET messages_last_minute = 0,
@@ -375,8 +377,9 @@ class QueueProcessor {
                     messagesLastMinute = 0;
                 }
 
-                // 3. Not over 15 messages per minute
+                // 3. Not over 15 messages per minute (strict limit)
                 if (messagesLastMinute >= 15) {
+                    // Sender has reached 15 messages/minute limit - skip until reset
                     continue;
                 }
 
@@ -582,6 +585,7 @@ class QueueProcessor {
 
     // Update sender after sending
     async updateSenderAfterSend(senderPhone) {
+        // Update counters: messages_last_minute is reset every minute (max 15 per minute per sender)
         await query(`
             UPDATE accounts
             SET 
@@ -592,6 +596,16 @@ class QueueProcessor {
                 last_message_at = NOW()
             WHERE phone = $1
         `, [senderPhone]);
+        
+        // Log if approaching limit (for monitoring)
+        const accountStats = await query(`
+            SELECT messages_last_minute FROM accounts WHERE phone = $1
+        `, [senderPhone]);
+        
+        const currentCount = accountStats.rows[0]?.messages_last_minute || 0;
+        if (currentCount >= 14) {
+            logger.warn(`[QueueProcessor] ⚠️ ${senderPhone} approaching limit: ${currentCount}/15 messages this minute`);
+        }
     }
 
     // Check and log campaign completion
