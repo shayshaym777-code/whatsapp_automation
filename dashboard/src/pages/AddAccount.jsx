@@ -35,6 +35,7 @@ function AddAccount() {
     const [status, setStatus] = useState('idle') // idle, requesting, waiting, success, error
     const [sessionNumber, setSessionNumber] = useState(1) // Which session (1-4)
     const [existingSessions, setExistingSessions] = useState(0) // How many sessions already exist
+    const [verifiedConnected, setVerifiedConnected] = useState(false) // Only show success if verified connected
 
     // Check existing sessions for this phone
     useEffect(() => {
@@ -117,7 +118,7 @@ function AddAccount() {
                 setStatus('waiting')
                 // Start polling for connection status
                 startPolling(cleanPhone, data.worker_id)
-            } else if (data.status === 'already_connected') {
+                } else if (data.status === 'already_connected') {
                 // Double check - make sure it's really connected
                 // Wait a moment for the account to appear
                 await new Promise(resolve => setTimeout(resolve, 2000))
@@ -125,17 +126,32 @@ function AddAccount() {
                 const account = accounts.find(a => a.phone === cleanPhone)
                 
                 if (account && account.logged_in && account.connected) {
-                    setStatus('success')
-                    setExistingSessions(prev => {
-                        // Update session count if this is a new session
-                        const currentSessions = account.sessions_total || 1
-                        return Math.max(prev, currentSessions)
-                    })
-                    setTimeout(() => navigate('/accounts'), 2000)
+                    // Double verify - check again after delay
+                    await new Promise(resolve => setTimeout(resolve, 1000))
+                    const verifyAccounts = await fetchAllAccounts()
+                    const verifyAccount = verifyAccounts.find(a => a.phone === cleanPhone)
+                    
+                    if (verifyAccount && verifyAccount.logged_in && verifyAccount.connected) {
+                        // Really connected - show success
+                        setVerifiedConnected(true)
+                        setStatus('success')
+                        setExistingSessions(prev => {
+                            // Update session count if this is a new session
+                            const currentSessions = verifyAccount.sessions_total || 1
+                            return Math.max(prev, currentSessions)
+                        })
+                        setTimeout(() => navigate('/accounts'), 2000)
+                    } else {
+                        // Not really connected - DON'T show success, continue polling
+                        console.log(`Account ${cleanPhone} shows as already_connected but verification failed. Starting polling...`)
+                        setStatus('waiting')
+                        startPolling(cleanPhone, data.worker_id)
+                    }
                 } else {
-                    // Not really connected - show error
-                    setError(`Account is not connected. Status: logged_in=${account?.logged_in}, connected=${account?.connected}. Please try connecting again.`)
-                    setStatus('error')
+                    // Not really connected - DON'T show success, continue polling
+                    console.log(`Account ${cleanPhone} shows as already_connected but not really connected. Starting polling...`)
+                    setStatus('waiting')
+                    startPolling(cleanPhone, data.worker_id)
                 }
             } else {
                 setError(data.message || 'Unexpected response from server')
@@ -170,17 +186,42 @@ function AddAccount() {
 
                 // Make sure it's REALLY connected, not just logged_in
                 if (account?.logged_in && account?.connected) {
-                    clearInterval(poll)
-                    setStatus('success')
-                    // Update session count
-                    setExistingSessions(prev => prev + 1)
-                    setTimeout(() => navigate('/accounts'), 2000)
+                    // Double check - verify it's still connected after a short delay
+                    await new Promise(resolve => setTimeout(resolve, 1000))
+                    const verifyAccounts = await fetchAllAccounts()
+                    const verifyAccount = verifyAccounts.find(a => a.phone === cleanPhone)
+                    
+                    if (verifyAccount?.logged_in && verifyAccount?.connected) {
+                        // Really connected - verify one more time after another delay
+                        await new Promise(resolve => setTimeout(resolve, 1000))
+                        const finalVerifyAccounts = await fetchAllAccounts()
+                        const finalVerifyAccount = finalVerifyAccounts.find(a => a.phone === cleanPhone)
+                        
+                        if (finalVerifyAccount?.logged_in && finalVerifyAccount?.connected) {
+                            // Really connected - show success
+                            clearInterval(poll)
+                            setVerifiedConnected(true)
+                            setStatus('success')
+                            // Update session count
+                            setExistingSessions(prev => prev + 1)
+                            setTimeout(() => navigate('/accounts'), 2000)
+                        } else {
+                            // Not really connected - continue polling
+                            console.log(`Account ${cleanPhone} appeared connected but final verification failed. Continuing to poll...`)
+                        }
+                    } else {
+                        // Not really connected - continue polling
+                        console.log(`Account ${cleanPhone} appeared connected but verification failed. Continuing to poll...`)
+                    }
                 } else if (account?.logged_in && !account?.connected) {
                     // Logged in but not connected - still waiting
                     console.log(`Account ${cleanPhone} logged in but not connected yet... (attempt ${attempts}/${maxAttempts})`)
                 } else if (!account) {
                     // Account not found yet - still waiting
                     console.log(`Account ${cleanPhone} not found yet... (attempt ${attempts}/${maxAttempts})`)
+                } else {
+                    // Account exists but not logged in or connected
+                    console.log(`Account ${cleanPhone} exists but not connected. logged_in=${account?.logged_in}, connected=${account?.connected} (attempt ${attempts}/${maxAttempts})`)
                 }
             } catch (err) {
                 console.error('Polling error:', err)
@@ -366,8 +407,8 @@ function AddAccount() {
                     </div>
                 )}
 
-                {/* Success */}
-                {status === 'success' && (
+                {/* Success - Only show if verified connected */}
+                {status === 'success' && verifiedConnected && (
                     <div className="mb-6 p-6 bg-green-500/20 border border-green-500/30 rounded-xl text-center">
                         <div className="text-5xl mb-3">✅</div>
                         <p className="text-green-400 font-semibold text-xl">
