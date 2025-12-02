@@ -106,7 +106,7 @@ class QueueProcessor {
                 // Try to send with immediate retries
                 while (!messageSent && attempts < maxImmediateRetries) {
                     attempts++;
-                    
+
                     // Find best sender for this contact
                     const sender = await this.findBestSender(contact.recipient_phone, availableSenders);
 
@@ -126,10 +126,18 @@ class QueueProcessor {
                         await this.updateSenderAfterSend(sender.phone);
                         logger.info(`[QueueProcessor] ✅ Successfully sent to ${contact.recipient_phone} (attempt ${attempts})`);
                     } else {
+                        // Wait a moment for DB update to complete
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                        
                         // Check message status after failure
                         const checkStatus = await query(`
                             SELECT status, retry_count FROM message_queue WHERE id = $1
                         `, [contact.id]);
+
+                        if (!checkStatus.rows || checkStatus.rows.length === 0) {
+                            // Message was removed - stop retrying
+                            break;
+                        }
 
                         const status = checkStatus.rows[0]?.status;
                         const retryCount = checkStatus.rows[0]?.retry_count || 0;
@@ -159,6 +167,10 @@ class QueueProcessor {
                             // Max immediate retries reached - will retry in next batch
                             logger.info(`[QueueProcessor] ⏭️ Max immediate retries (${attempts}) reached for ${contact.recipient_phone} - will retry in next batch`);
                             break;
+                        } else {
+                            // Unknown status - log and continue
+                            logger.warn(`[QueueProcessor] ⚠️ Unknown status '${status}' for ${contact.recipient_phone} - will retry in next batch`);
+                            break;
                         }
                     }
                 }
@@ -168,7 +180,7 @@ class QueueProcessor {
                     const finalStatus = await query(`
                         SELECT status FROM message_queue WHERE id = $1
                     `, [contact.id]);
-                    
+
                     const status = finalStatus.rows[0]?.status;
                     if (status === 'pending') {
                         retryCount++;
@@ -574,7 +586,7 @@ class QueueProcessor {
                             processed_at = NULL
                         WHERE id = $2
                     `, [newRetryCount, contact.id]);
-                    logger.info(`[QueueProcessor] 🔄 Retry ${newRetryCount}/3 for ${contact.recipient_phone} - will retry in next batch`);
+                    logger.info(`[QueueProcessor] 🔄 Retry ${newRetryCount}/3 for ${contact.recipient_phone} - reset to pending for immediate retry`);
                 } else {
                     // Max retries reached - mark as failed permanently
                     await query(`
