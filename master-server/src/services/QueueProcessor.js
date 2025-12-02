@@ -54,12 +54,12 @@ class QueueProcessor {
 
             // Check if we have at least 2 messages waiting
             const pendingCount = await this.getPendingCount();
-            
+
             // Always log when checking (for debugging)
             if (pendingCount !== null && pendingCount > 0) {
                 logger.info(`[QueueProcessor] 🔍 Checking queue: ${pendingCount} message(s) pending`);
             }
-            
+
             if (pendingCount === null || pendingCount < 2) {
                 // Log if there are pending messages but less than 2
                 if (pendingCount !== null && pendingCount > 0) {
@@ -75,7 +75,10 @@ class QueueProcessor {
             const newContacts = uniqueContacts - contactsWithChat;
 
             // Get available senders
+            logger.info(`[QueueProcessor] 🔍 Getting available senders...`);
             const availableSenders = await this.getAvailableSenders();
+            logger.info(`[QueueProcessor] 🔍 Found ${availableSenders.length} available senders`);
+            
             if (availableSenders.length === 0) {
                 logger.warn('[QueueProcessor] ⚠️ No available senders - cannot process queue');
                 this.isProcessing = false;
@@ -86,7 +89,7 @@ class QueueProcessor {
 
             // Sort contacts by priority (existing chats first)
             const contacts = await this.getContactsByPriority();
-            
+
             if (contacts.length === 0) {
                 logger.warn('[QueueProcessor] ⚠️ No contacts found in queue (but pendingCount > 0)');
                 this.isProcessing = false;
@@ -221,25 +224,31 @@ class QueueProcessor {
     async getAvailableSenders() {
         // Get all healthy accounts from workers
         const allAccounts = [];
+        let totalAccountsFromWorkers = 0;
 
         for (const worker of this.workers) {
             try {
+                logger.info(`[QueueProcessor] 🔍 Checking worker: ${worker.id} at ${worker.url}`);
                 const response = await axios.get(`${worker.url}/accounts`, { timeout: 5000 });
                 if (response.data && response.data.accounts) {
-                    for (const acc of response.data.accounts) {
-                        if (acc.logged_in && acc.connected) {
-                            allAccounts.push({
-                                phone: acc.phone,
-                                worker_url: worker.url,
-                                ...acc
-                            });
-                        }
+                    const workerAccounts = response.data.accounts.filter(acc => acc.logged_in && acc.connected);
+                    totalAccountsFromWorkers += response.data.accounts.length;
+                    logger.info(`[QueueProcessor] 🔍 Worker ${worker.id}: ${workerAccounts.length} connected accounts (out of ${response.data.accounts.length} total)`);
+                    
+                    for (const acc of workerAccounts) {
+                        allAccounts.push({
+                            phone: acc.phone,
+                            worker_url: worker.url,
+                            ...acc
+                        });
                     }
                 }
             } catch (err) {
-                logger.warn(`[QueueProcessor] Failed to get accounts from ${worker.id}: ${err.message}`);
+                logger.warn(`[QueueProcessor] ❌ Failed to get accounts from ${worker.id}: ${err.message}`);
             }
         }
+        
+        logger.info(`[QueueProcessor] 🔍 Total accounts from workers: ${allAccounts.length} connected (${totalAccountsFromWorkers} total)`);
 
         // Filter by availability criteria
         const available = [];
@@ -297,6 +306,7 @@ class QueueProcessor {
             if (acc.last_message_at) {
                 const secondsSinceLastMessage = (now - new Date(acc.last_message_at)) / 1000;
                 if (secondsSinceLastMessage < 4) {
+                    logger.debug(`[QueueProcessor] 🔍 Account ${account.phone} skipped: cooldown (${secondsSinceLastMessage.toFixed(1)}s < 4s)`);
                     continue;
                 }
             }
@@ -312,6 +322,7 @@ class QueueProcessor {
             });
         }
 
+        logger.info(`[QueueProcessor] 🔍 After filtering: ${available.length} available senders (from ${allAccounts.length} connected)`);
         return available;
     }
 
@@ -424,11 +435,11 @@ class QueueProcessor {
 
         } catch (err) {
             const errorMsg = err.message || err.toString();
-            
+
             // Check if account is blocked
             if (errorMsg.includes('blocked') || errorMsg.includes('banned') || errorMsg.includes('restricted')) {
                 logger.error(`[QueueProcessor] 🚨 BLOCKED: ${sender.phone} - Account blocked!`);
-                
+
                 // Mark account as blocked in DB
                 await query(`
                     UPDATE accounts
@@ -436,7 +447,7 @@ class QueueProcessor {
                     WHERE phone = $1
                 `, [sender.phone]);
             }
-            
+
             logger.error(`[QueueProcessor] ❌ Failed to send ${contact.id} (${contact.recipient_phone}) from ${sender.phone}: ${errorMsg}`);
 
             // Mark as failed
