@@ -78,7 +78,7 @@ class QueueProcessor {
             logger.info(`[QueueProcessor] 🔍 Getting available senders...`);
             const availableSenders = await this.getAvailableSenders();
             logger.info(`[QueueProcessor] 🔍 Found ${availableSenders.length} available senders`);
-            
+
             if (availableSenders.length === 0) {
                 logger.warn('[QueueProcessor] ⚠️ No available senders - cannot process queue');
                 this.isProcessing = false;
@@ -234,7 +234,7 @@ class QueueProcessor {
                     const workerAccounts = response.data.accounts.filter(acc => acc.logged_in && acc.connected);
                     totalAccountsFromWorkers += response.data.accounts.length;
                     logger.info(`[QueueProcessor] 🔍 Worker ${worker.id}: ${workerAccounts.length} connected accounts (out of ${response.data.accounts.length} total)`);
-                    
+
                     for (const acc of workerAccounts) {
                         allAccounts.push({
                             phone: acc.phone,
@@ -247,7 +247,7 @@ class QueueProcessor {
                 logger.warn(`[QueueProcessor] ❌ Failed to get accounts from ${worker.id}: ${err.message}`);
             }
         }
-        
+
         logger.info(`[QueueProcessor] 🔍 Total accounts from workers: ${allAccounts.length} connected (${totalAccountsFromWorkers} total)`);
 
         // Filter by availability criteria
@@ -323,6 +323,65 @@ class QueueProcessor {
         }
 
         logger.info(`[QueueProcessor] 🔍 After filtering: ${available.length} available senders (from ${allAccounts.length} connected)`);
+        
+        // If no senders available, log why
+        if (available.length === 0 && allAccounts.length > 0) {
+            logger.warn(`[QueueProcessor] ⚠️ All ${allAccounts.length} senders were filtered out. Reasons:`);
+            // Count reasons
+            let blockedCount = 0;
+            let overLimitCount = 0;
+            let cooldownCount = 0;
+            let notInDbCount = 0;
+            
+            for (const account of allAccounts) {
+                const dbAccount = await query(`
+                    SELECT 
+                        phone,
+                        messages_last_minute,
+                        last_message_at,
+                        blocked_at,
+                        created_at
+                    FROM accounts
+                    WHERE phone = $1
+                `, [account.phone]);
+                
+                if (dbAccount.rows.length === 0) {
+                    notInDbCount++;
+                    continue;
+                }
+                
+                const acc = dbAccount.rows[0];
+                
+                if (acc.blocked_at && new Date(acc.blocked_at) > new Date(Date.now() - 48 * 60 * 60 * 1000)) {
+                    blockedCount++;
+                    continue;
+                }
+                
+                let messagesLastMinute = acc.messages_last_minute || 0;
+                const lastReset = acc.last_message_minute_reset ? new Date(acc.last_message_minute_reset) : new Date(0);
+                const minutesSinceReset = (now - lastReset) / (1000 * 60);
+                
+                if (minutesSinceReset >= 1) {
+                    messagesLastMinute = 0;
+                }
+                
+                if (messagesLastMinute >= 15) {
+                    overLimitCount++;
+                    continue;
+                }
+                
+                if (acc.last_message_at) {
+                    const secondsSinceLastMessage = (now - new Date(acc.last_message_at)) / 1000;
+                    if (secondsSinceLastMessage < 4) {
+                        cooldownCount++;
+                        continue;
+                    }
+                }
+            }
+            
+            logger.warn(`[QueueProcessor] ⚠️ Filter reasons: ${blockedCount} blocked, ${overLimitCount} over limit (15/min), ${cooldownCount} in cooldown, ${notInDbCount} not in DB`);
+        }
+        
         return available;
     }
 
