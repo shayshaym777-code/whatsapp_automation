@@ -1,0 +1,2 @@
+docker compose logs -f master worker-1 worker-2 | grep -E "(API|POST|GET|/api/send|Campaign|📤|📥|✅|❌|SEND|Error|not logged|not connected)"
+
