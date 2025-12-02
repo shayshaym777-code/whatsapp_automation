@@ -68,7 +68,7 @@ class QueueProcessor {
 
             // Get available senders
             const availableSenders = await this.getAvailableSenders();
-            
+
             if (availableSenders.length === 0) {
                 // Only log once per minute to avoid spam
                 const now = Date.now();
@@ -215,13 +215,8 @@ class QueueProcessor {
 
     // Get available senders
     async getAvailableSenders() {
-        logger.info(`[QueueProcessor] 🔍 getAvailableSenders() called`);
-
         // Get all healthy accounts from workers
         const allAccounts = [];
-        let totalAccountsFromWorkers = 0;
-
-        logger.info(`[QueueProcessor] 🔍 Checking ${this.workers.length} workers`);
 
         for (const worker of this.workers) {
             try {
@@ -254,7 +249,7 @@ class QueueProcessor {
         for (const account of allAccounts) {
             try {
                 // Get account stats from DB
-                const dbAccount = await query(`
+                let dbAccount = await query(`
                     SELECT 
                         phone,
                         messages_last_minute,
@@ -268,130 +263,92 @@ class QueueProcessor {
                     WHERE phone = $1
                 `, [account.phone]);
 
+                // Account not in DB - create it automatically
                 if (dbAccount.rows.length === 0) {
-                    // Account not in DB - create it automatically
                     try {
                         await query(`
-                        INSERT INTO accounts (phone, created_at, messages_last_minute, last_message_minute_reset)
-                        VALUES ($1, NOW(), 0, NOW())
-                        ON CONFLICT (phone) DO NOTHING
-                    `, [account.phone]);
+                            INSERT INTO accounts (phone, created_at, messages_last_minute, last_message_minute_reset)
+                            VALUES ($1, NOW(), 0, NOW())
+                            ON CONFLICT (phone) DO NOTHING
+                        `, [account.phone]);
 
                         // Retry getting account from DB
-                        const retryAccount = await query(`
-                        SELECT 
-                            phone,
-                            messages_last_minute,
-                            last_message_at,
-                            last_message_minute_reset,
-                            blocked_at,
-                            created_at,
-                            total_messages_sent,
-                            successful_messages
-                        FROM accounts
+                        dbAccount = await query(`
+                            SELECT 
+                                phone,
+                                messages_last_minute,
+                                last_message_at,
+                                last_message_minute_reset,
+                                blocked_at,
+                                created_at,
+                                total_messages_sent,
+                                successful_messages
+                            FROM accounts
+                            WHERE phone = $1
+                        `, [account.phone]);
+
+                        if (dbAccount.rows.length === 0) {
+                            continue; // Failed to create or fetch
+                        }
+                    } catch (err) {
+                        continue; // Skip this account if creation fails
+                    }
+                }
+
+                // Now process the account (either existing or newly created)
+                const acc = dbAccount.rows[0];
+
+                // 1. Not blocked
+                if (acc.blocked_at && new Date(acc.blocked_at) > new Date(Date.now() - 48 * 60 * 60 * 1000)) {
+                    continue;
+                }
+
+                // 2. Check messages per minute (reset if needed)
+                let messagesLastMinute = acc.messages_last_minute || 0;
+                const lastReset = acc.last_message_minute_reset ? new Date(acc.last_message_minute_reset) : new Date(0);
+                const minutesSinceReset = (now - lastReset) / (1000 * 60);
+
+                if (minutesSinceReset >= 1) {
+                    // Reset counter
+                    await query(`
+                        UPDATE accounts
+                        SET messages_last_minute = 0,
+                            last_message_minute_reset = NOW()
                         WHERE phone = $1
                     `, [account.phone]);
+                    messagesLastMinute = 0;
+                }
 
-                        if (retryAccount.rows.length === 0) {
-                            continue;
-                        }
-
-                        // Use the newly created account
-                        const acc = retryAccount.rows[0];
-
-                        // Check if available (skip blocked check for new accounts)
-                        let messagesLastMinute = acc.messages_last_minute || 0;
-                        const lastReset = acc.last_message_minute_reset ? new Date(acc.last_message_minute_reset) : new Date(0);
-                        const minutesSinceReset = (now - lastReset) / (1000 * 60);
-
-                        if (minutesSinceReset >= 1) {
-                            messagesLastMinute = 0;
-                        }
-
-                        if (messagesLastMinute >= 15) {
-                            continue;
-                        }
-
-                        if (acc.last_message_at) {
-                            const secondsSinceLastMessage = (now - new Date(acc.last_message_at)) / 1000;
-                            if (secondsSinceLastMessage < 4) {
-                                continue;
-                            }
-                        }
-
-                        available.push({
-                            phone: account.phone,
-                            worker_url: account.worker_url,
-                            messages_last_minute: messagesLastMinute,
-                            last_message_at: acc.last_message_at,
-                            created_at: acc.created_at,
-                            total_messages_sent: acc.total_messages_sent || 0,
-                            successful_messages: acc.successful_messages || 0
-                        });
-                        continue;
-                    } catch (err) {
-                        continue;
-                    }
-                } catch (err) {
+                // 3. Not over 15 messages per minute
+                if (messagesLastMinute >= 15) {
                     continue;
                 }
 
-                try {
-
-                    const acc = dbAccount.rows[0];
-
-                    // 1. Not blocked
-                    if (acc.blocked_at && new Date(acc.blocked_at) > new Date(Date.now() - 48 * 60 * 60 * 1000)) {
+                // 4. Cooldown: at least 4 seconds since last message
+                if (acc.last_message_at) {
+                    const secondsSinceLastMessage = (now - new Date(acc.last_message_at)) / 1000;
+                    if (secondsSinceLastMessage < 4) {
                         continue;
                     }
-
-                    // 2. Check messages per minute (reset if needed)
-                    let messagesLastMinute = acc.messages_last_minute || 0;
-                    const lastReset = acc.last_message_minute_reset ? new Date(acc.last_message_minute_reset) : new Date(0);
-                    const minutesSinceReset = (now - lastReset) / (1000 * 60);
-
-                    if (minutesSinceReset >= 1) {
-                        // Reset counter
-                        await query(`
-                    UPDATE accounts
-                    SET messages_last_minute = 0,
-                        last_message_minute_reset = NOW()
-                    WHERE phone = $1
-                `, [account.phone]);
-                        messagesLastMinute = 0;
-                    }
-
-                    // 3. Not over 15 messages per minute
-                    if (messagesLastMinute >= 15) {
-                        continue;
-                    }
-
-                    // 4. Cooldown: at least 4 seconds since last message
-                    if (acc.last_message_at) {
-                        const secondsSinceLastMessage = (now - new Date(acc.last_message_at)) / 1000;
-                        if (secondsSinceLastMessage < 4) {
-                            continue;
-                        }
-                    }
-
-                    available.push({
-                        phone: account.phone,
-                        worker_url: account.worker_url,
-                        messages_last_minute: messagesLastMinute,
-                        last_message_at: acc.last_message_at,
-                        created_at: acc.created_at,
-                        total_messages_sent: acc.total_messages_sent || 0,
-                        successful_messages: acc.successful_messages || 0
-                    });
-                } catch (err) {
-                    logger.error(`[QueueProcessor] ❌ Error processing account ${account.phone}: ${err.message}`);
-                    logger.error(`[QueueProcessor] ❌ Error stack: ${err.stack}`);
-                    continue;
                 }
+
+                available.push({
+                    phone: account.phone,
+                    worker_url: account.worker_url,
+                    messages_last_minute: messagesLastMinute,
+                    last_message_at: acc.last_message_at,
+                    created_at: acc.created_at,
+                    total_messages_sent: acc.total_messages_sent || 0,
+                    successful_messages: acc.successful_messages || 0
+                });
+            } catch (err) {
+                logger.error(`[QueueProcessor] ❌ Error processing account ${account.phone}: ${err.message}`);
+                continue;
             }
+        }
 
         return available;
-        }
+    }
 
     // Find best sender for recipient
     async findBestSender(recipientPhone, availableSenders) {
