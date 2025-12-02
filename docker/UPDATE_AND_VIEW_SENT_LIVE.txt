@@ -1,0 +1,2 @@
+cd ~/whatsapp_automation/docker && git pull origin main && docker compose up -d --build master && sleep 8 && docker compose logs -f master | grep --line-buffered "🟢 Sent to:" | sed 's/.*🟢 Sent to: /🟢 /'
+
