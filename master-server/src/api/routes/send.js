@@ -159,7 +159,7 @@ async function processCampaign(campaignId, distribution, message) {
 
                 // Send to worker and check response
                 console.log(`[Campaign ${campaignId}] 📤 Sending from ${phone} to ${toPhone} via ${data.worker_url}`);
-                
+
                 const response = await axios.post(`${data.worker_url}/send`, {
                     from_phone: phone,
                     to_phone: toPhone,
