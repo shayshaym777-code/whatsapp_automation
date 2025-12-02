@@ -12,11 +12,55 @@ class QueueProcessor {
         this.processingInterval = null;
         this.lastTableErrorLog = null;
         this.lastNoSendersLog = null;
-        this.workers = [
-            { id: 'worker-1', url: process.env.WORKER_1_URL || 'http://worker-1:3001' },
-            { id: 'worker-2', url: process.env.WORKER_2_URL || 'http://worker-2:3002' },
-            { id: 'worker-3', url: process.env.WORKER_3_URL || 'http://worker-3:3003' }
-        ];
+        // Dynamic workers: Support 1-100 workers
+        // Can be configured via WORKER_COUNT env var or auto-detect from WORKER_N_URL
+        this.workers = this.loadWorkers();
+        // Reload workers every 5 minutes to pick up new workers
+        this.lastWorkersReload = Date.now();
+        this.WORKERS_RELOAD_INTERVAL = 5 * 60 * 1000; // 5 minutes
+        // Track messages sent per worker for equal distribution
+        this.workerMessageCounts = {};
+        // Track which recipients already have chats (fast lookup)
+        this.recipientsWithChats = new Set();
+        // Reset distribution counters every hour for fair distribution
+        this.lastDistributionReset = Date.now();
+        this.DISTRIBUTION_RESET_INTERVAL = 60 * 60 * 1000; // 1 hour
+    }
+
+    // Load workers dynamically (support 1-100 workers)
+    loadWorkers() {
+        const workers = [];
+        const workerCount = parseInt(process.env.WORKER_COUNT) || 0;
+
+        if (workerCount > 0) {
+            // Use WORKER_COUNT if specified
+            for (let i = 1; i <= workerCount; i++) {
+                const workerId = `worker-${i}`;
+                const workerUrl = process.env[`WORKER_${i}_URL`] || `http://worker-${i}:3001`;
+                workers.push({ id: workerId, url: workerUrl });
+            }
+        } else {
+            // Auto-detect from WORKER_N_URL env vars (up to 100 workers)
+            for (let i = 1; i <= 100; i++) {
+                const workerUrl = process.env[`WORKER_${i}_URL`];
+                if (workerUrl) {
+                    const workerId = `worker-${i}`;
+                    workers.push({ id: workerId, url: workerUrl });
+                }
+            }
+
+            // Fallback to default 3 workers if none found
+            if (workers.length === 0) {
+                workers.push(
+                    { id: 'worker-1', url: process.env.WORKER_1_URL || 'http://worker-1:3001' },
+                    { id: 'worker-2', url: process.env.WORKER_2_URL || 'http://worker-2:3001' },
+                    { id: 'worker-3', url: process.env.WORKER_3_URL || 'http://worker-3:3001' }
+                );
+            }
+        }
+
+        logger.info(`[QueueProcessor] Loaded ${workers.length} workers: ${workers.map(w => w.id).join(', ')}`);
+        return workers;
     }
 
     // Start processing queue
@@ -48,6 +92,14 @@ class QueueProcessor {
     async processQueue() {
         if (this.isProcessing) {
             return; // Already processing
+        }
+
+        // Reset distribution counters every hour for fair distribution
+        const now = Date.now();
+        if (now - this.lastDistributionReset > this.DISTRIBUTION_RESET_INTERVAL) {
+            logger.info(`[QueueProcessor] 🔄 Resetting worker distribution counters for equal distribution`);
+            this.workerMessageCounts = {};
+            this.lastDistributionReset = now;
         }
 
         try {
@@ -83,7 +135,22 @@ class QueueProcessor {
             // Calculate total sending capacity
             const MESSAGES_PER_MINUTE_PER_SENDER = 15; // 15 messages per minute per device
             const totalCapacity = availableSenders.length * MESSAGES_PER_MINUTE_PER_SENDER;
-            logger.info(`[QueueProcessor] 📤 Processing ${pendingCount} messages (${uniqueContacts} contacts: ${contactsWithChat} existing, ${newContacts} new) with ${availableSenders.length} senders (capacity: ${totalCapacity} msg/min = ${availableSenders.length} × ${MESSAGES_PER_MINUTE_PER_SENDER})`);
+            // Count senders by worker for load balancing info
+            const sendersByWorker = {};
+            for (const sender of availableSenders) {
+                const workerId = sender.worker_id || 'unknown';
+                sendersByWorker[workerId] = (sendersByWorker[workerId] || 0) + 1;
+            }
+            const workerDistribution = Object.entries(sendersByWorker)
+                .map(([id, count]) => `${id}:${count}`)
+                .join(', ');
+
+            // Show equal distribution status
+            const distributionStatus = Object.entries(this.workerMessageCounts)
+                .map(([id, count]) => `${id}:${count}`)
+                .join(', ') || 'none';
+
+            logger.info(`[QueueProcessor] 📤 Processing ${pendingCount} messages (${uniqueContacts} contacts: ${contactsWithChat} existing, ${newContacts} new) with ${availableSenders.length} senders (capacity: ${totalCapacity} msg/min = ${availableSenders.length} × ${MESSAGES_PER_MINUTE_PER_SENDER}) | Workers: ${workerDistribution} | Distribution: ${distributionStatus}`);
 
             // Sort contacts by priority (existing chats first)
             // Take up to availableSenders.length * 2 contacts to maximize parallel sending
@@ -295,27 +362,97 @@ class QueueProcessor {
     }
 
     // Get available senders
+    // Strategy: Use ALL workers, auto-reconnect if worker disconnects
     async getAvailableSenders() {
+        // Reload workers periodically to pick up new ones
+        const currentTime = Date.now();
+        if (currentTime - this.lastWorkersReload > this.WORKERS_RELOAD_INTERVAL) {
+            const newWorkers = this.loadWorkers();
+            if (newWorkers.length !== this.workers.length) {
+                logger.info(`[QueueProcessor] Reloaded workers: ${this.workers.length} → ${newWorkers.length}`);
+                this.workers = newWorkers;
+            }
+            this.lastWorkersReload = currentTime;
+        }
+
         // Get all healthy accounts from workers
         const allAccounts = [];
+        const workerStatus = {}; // Track which workers are healthy
+        const failedWorkers = []; // Track workers that failed for reconnect
 
         for (const worker of this.workers) {
             try {
                 const response = await axios.get(`${worker.url}/accounts`, { timeout: 5000 });
                 if (response.data && response.data.accounts) {
                     const workerAccounts = response.data.accounts.filter(acc => acc.logged_in && acc.connected);
+                    workerStatus[worker.id] = { healthy: true, accountCount: workerAccounts.length };
 
                     for (const acc of workerAccounts) {
                         allAccounts.push({
                             phone: acc.phone,
                             worker_url: worker.url,
+                            worker_id: worker.id,
                             ...acc
                         });
                     }
+                } else {
+                    workerStatus[worker.id] = { healthy: false, accountCount: 0 };
+                    failedWorkers.push(worker);
                 }
             } catch (err) {
-                // Silent fail - don't log every error
+                // Worker is down or not responding - try to reconnect
+                workerStatus[worker.id] = { healthy: false, accountCount: 0 };
+                failedWorkers.push(worker);
+                logger.warn(`[QueueProcessor] ⚠️ Worker ${worker.id} is not responding: ${err.message}`);
             }
+        }
+
+        // Auto-reconnect failed workers
+        if (failedWorkers.length > 0) {
+            logger.info(`[QueueProcessor] 🔄 Attempting to reconnect ${failedWorkers.length} failed worker(s)...`);
+            for (const worker of failedWorkers) {
+                try {
+                    // Try to ping worker health endpoint first
+                    await axios.get(`${worker.url}/health`, { timeout: 3000 });
+                    logger.info(`[QueueProcessor] ✅ Worker ${worker.id} is back online`);
+                } catch (err) {
+                    // Worker still down - try to trigger reconnect for all accounts
+                    try {
+                        const response = await axios.get(`${worker.url}/accounts`, { timeout: 3000 });
+                        if (response.data && response.data.accounts) {
+                            // Try to reconnect disconnected accounts
+                            const disconnectedAccounts = response.data.accounts.filter(
+                                acc => acc.logged_in && !acc.connected
+                            );
+                            for (const acc of disconnectedAccounts) {
+                                try {
+                                    await axios.post(
+                                        `${worker.url}/accounts/${acc.phone}/reconnect`,
+                                        {},
+                                        { timeout: 5000 }
+                                    );
+                                    logger.info(`[QueueProcessor] 🔄 Reconnect request sent for ${acc.phone} on ${worker.id}`);
+                                } catch (reconnectErr) {
+                                    // Ignore reconnect errors - will retry next cycle
+                                }
+                            }
+                        }
+                    } catch (reconnectErr) {
+                        // Worker completely down - will retry next cycle
+                        logger.debug(`[QueueProcessor] Worker ${worker.id} reconnect attempt failed: ${reconnectErr.message}`);
+                    }
+                }
+            }
+        }
+
+        // Log worker status - use ALL available workers
+        const healthyWorkers = Object.values(workerStatus).filter(w => w.healthy).length;
+        const totalAccounts = allAccounts.length;
+
+        if (healthyWorkers < this.workers.length) {
+            logger.warn(`[QueueProcessor] ⚠️ Only ${healthyWorkers}/${this.workers.length} workers are healthy | Using ${totalAccounts} accounts from all available workers`);
+        } else {
+            logger.info(`[QueueProcessor] ✅ All ${this.workers.length} workers are healthy | Using ${totalAccounts} accounts from all workers`);
         }
 
         if (allAccounts.length === 0) {
@@ -412,6 +549,7 @@ class QueueProcessor {
                 available.push({
                     phone: account.phone,
                     worker_url: account.worker_url,
+                    worker_id: account.worker_id || 'unknown',
                     messages_last_minute: messagesLastMinute,
                     last_message_at: acc.last_message_at,
                     created_at: acc.created_at,
@@ -428,30 +566,79 @@ class QueueProcessor {
     }
 
     // Find best sender for recipient
+    // Strategy: 
+    // 1. Fast check - if recipient already has chat, use that sender
+    // 2. Equal distribution - divide remaining recipients equally across workers
     async findBestSender(recipientPhone, availableSenders) {
-        // Check if any sender has existing chat with recipient
+        // Fast check: if recipient already has chat, use that sender
         const existingChats = await query(`
             SELECT sender_phone, last_message_at
             FROM chat_history
             WHERE recipient_phone = $1
             AND sender_phone = ANY($2::text[])
             ORDER BY last_message_at DESC
+            LIMIT 1
         `, [recipientPhone, availableSenders.map(s => s.phone)]);
 
         if (existingChats.rows.length > 0) {
             // Use sender with most recent chat
             const senderPhone = existingChats.rows[0].sender_phone;
-            return availableSenders.find(s => s.phone === senderPhone);
+            const sender = availableSenders.find(s => s.phone === senderPhone);
+            if (sender) {
+                // Track which worker sent this
+                const workerId = sender.worker_id || 'unknown';
+                this.workerMessageCounts[workerId] = (this.workerMessageCounts[workerId] || 0) + 1;
+                return sender;
+            }
         }
 
-        // No existing chat - select by score
-        const scoredSenders = availableSenders.map(sender => ({
+        // No existing chat - distribute evenly across workers
+        // Group senders by worker_id
+        const sendersByWorker = {};
+        for (const sender of availableSenders) {
+            const workerId = sender.worker_id || 'unknown';
+            if (!sendersByWorker[workerId]) {
+                sendersByWorker[workerId] = [];
+            }
+            sendersByWorker[workerId].push(sender);
+        }
+
+        // Calculate how many messages each worker has sent (for equal distribution)
+        const workerMessageCounts = {};
+        for (const workerId in sendersByWorker) {
+            workerMessageCounts[workerId] = this.workerMessageCounts[workerId] || 0;
+        }
+
+        // Find worker with least messages sent (for equal distribution)
+        const workerIds = Object.keys(sendersByWorker);
+        if (workerIds.length === 0) {
+            return null;
+        }
+
+        // Sort workers by message count (least first)
+        workerIds.sort((a, b) => {
+            const countA = workerMessageCounts[a] || 0;
+            const countB = workerMessageCounts[b] || 0;
+            return countA - countB;
+        });
+
+        // Select worker with least messages sent
+        const selectedWorkerId = workerIds[0];
+        const workerSenders = sendersByWorker[selectedWorkerId];
+
+        // From that worker, select best sender by score
+        const scoredSenders = workerSenders.map(sender => ({
             ...sender,
             score: this.calculateSenderScore(sender)
         }));
 
         scoredSenders.sort((a, b) => b.score - a.score);
-        return scoredSenders[0];
+        const selectedSender = scoredSenders[0];
+
+        // Update counter for equal distribution
+        this.workerMessageCounts[selectedWorkerId] = (this.workerMessageCounts[selectedWorkerId] || 0) + 1;
+
+        return selectedSender;
     }
 
     // Calculate sender score
@@ -538,6 +725,27 @@ class QueueProcessor {
 
         } catch (err) {
             const errorMsg = err.message || err.toString();
+            const isConnectionError = errorMsg.includes('ECONNREFUSED') ||
+                errorMsg.includes('timeout') ||
+                errorMsg.includes('ENOTFOUND') ||
+                err.code === 'ECONNREFUSED' ||
+                err.code === 'ETIMEDOUT';
+
+            // If worker connection failed, try to reconnect
+            if (isConnectionError) {
+                logger.warn(`[QueueProcessor] 🔄 Worker ${sender.worker_id} connection failed, attempting reconnect...`);
+                try {
+                    // Try to reconnect the account
+                    await axios.post(
+                        `${sender.worker_url}/accounts/${sender.phone}/reconnect`,
+                        {},
+                        { timeout: 5000 }
+                    );
+                    logger.info(`[QueueProcessor] ✅ Reconnect request sent for ${sender.phone} on ${sender.worker_id}`);
+                } catch (reconnectErr) {
+                    logger.warn(`[QueueProcessor] ⚠️ Reconnect attempt failed for ${sender.phone}: ${reconnectErr.message}`);
+                }
+            }
 
             // Check if account is blocked
             if (errorMsg.includes('blocked') || errorMsg.includes('banned') || errorMsg.includes('restricted')) {
@@ -566,12 +774,25 @@ class QueueProcessor {
                 `, [contact.id]);
             } else {
                 // Temporary failure - reset to pending for retry (max 3 retries)
-                const retryResult = await query(`
-                    SELECT retry_count FROM message_queue WHERE id = $1
-                `, [contact.id]);
+                let currentRetryCount = 0;
+                let newRetryCount = 1;
 
-                const currentRetryCount = retryResult.rows[0]?.retry_count || 0;
-                const newRetryCount = currentRetryCount + 1;
+                try {
+                    const retryResult = await query(`
+                        SELECT retry_count FROM message_queue WHERE id = $1
+                    `, [contact.id]);
+                    currentRetryCount = retryResult.rows[0]?.retry_count || 0;
+                    newRetryCount = currentRetryCount + 1;
+                } catch (retryErr) {
+                    // If retry_count column doesn't exist, use 0 as default
+                    if (retryErr.message && retryErr.message.includes('retry_count')) {
+                        logger.warn(`[QueueProcessor] ⚠️ retry_count column not found, using default 0`);
+                        currentRetryCount = 0;
+                        newRetryCount = 1;
+                    } else {
+                        throw retryErr;
+                    }
+                }
 
                 if (newRetryCount < 3) {
                     // Retry - reset to pending (will be retried in next batch)
@@ -614,12 +835,12 @@ class QueueProcessor {
                 last_message_at = NOW()
             WHERE phone = $1
         `, [senderPhone]);
-        
+
         // Log if approaching limit (for monitoring)
         const accountStats = await query(`
             SELECT messages_last_minute FROM accounts WHERE phone = $1
         `, [senderPhone]);
-        
+
         const currentCount = accountStats.rows[0]?.messages_last_minute || 0;
         const MESSAGES_PER_MINUTE_LIMIT = 15;
         if (currentCount >= MESSAGES_PER_MINUTE_LIMIT - 2) {

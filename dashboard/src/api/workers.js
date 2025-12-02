@@ -186,15 +186,17 @@ export async function fetchAllAccounts() {
  * @param {string} phone - Phone number with country code
  * @param {object} worker - Worker object
  * @param {boolean} skipWarmup - Skip warmup period (for established accounts)
+ * @param {number} sessionNumber - Session number (1-4) for multi-session support
  */
-export async function connectAccountWithPairingCode(phone, worker, skipWarmup = false) {
-  const url = getWorkerUrl(worker)
-  const res = await fetch(`${url}/accounts/pair`, {
+export async function connectAccountWithPairingCode(phone, worker, skipWarmup = false, sessionNumber = 1) {
+  // Use master API for auto-worker creation
+  const res = await fetch(`/api/accounts/pair`, {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify({
       phone,
-      skip_warmup: skipWarmup
+      session_number: sessionNumber,
+      worker_id: worker?.id || null
     })
   })
 

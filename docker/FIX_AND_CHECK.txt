@@ -1,0 +1,4 @@
+# פקודה אחת - בדוק טבלאות, הפעל מחדש Master, ובדוק לוגים:
+
+docker compose exec -T postgres psql -U whatsapp -d whatsapp_automation -c "\dt" && echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" && docker compose restart master && sleep 15 && docker compose logs --tail=100 master | grep -E "(QueueProcessor|message_queue|chat_history|✅|❌|Error|error|Starting|Started)" | tail -30
+

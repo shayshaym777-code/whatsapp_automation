@@ -1,0 +1,18 @@
+# בדוק אם הטבלאות קיימות:
+docker compose exec -T postgres psql -U whatsapp -d whatsapp_automation -c "\dt"
+
+# בדוק את message_queue:
+docker compose exec -T postgres psql -U whatsapp -d whatsapp_automation -c "SELECT COUNT(*) FROM message_queue;"
+
+# בדוק את chat_history:
+docker compose exec -T postgres psql -U whatsapp -d whatsapp_automation -c "SELECT COUNT(*) FROM chat_history;"
+
+# אם הטבלאות לא קיימות, הרץ את ה-migration שוב:
+docker compose exec -T postgres psql -U whatsapp -d whatsapp_automation < ../database/migration_v9.sql
+
+# הפעל מחדש את Master:
+docker compose restart master
+
+# בדוק לוגים:
+docker compose logs -f master | grep -E "(QueueProcessor|message_queue|chat_history|✅|❌|Error|error)"
+

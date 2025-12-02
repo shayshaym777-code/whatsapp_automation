@@ -94,6 +94,7 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 
 	// Accounts
 	r.HandleFunc("/accounts", s.handleAccountsList).Methods(http.MethodGet)
+	r.HandleFunc("/accounts/{phone}/disconnect-reason", s.handleDisconnectReason).Methods(http.MethodGet)
 	r.HandleFunc("/accounts/pair", s.handlePair).Methods(http.MethodPost)
 	r.HandleFunc("/accounts/connect", s.handleConnect).Methods(http.MethodPost)
 	r.HandleFunc("/accounts/{phone}/reconnect", s.handleReconnect).Methods(http.MethodPost)
@@ -157,7 +158,7 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// Log detailed request info
-	log.Printf("[SEND] 📤 Request: from=%s to=%s name=%q message_len=%d", 
+	log.Printf("[SEND] 📤 Request: from=%s to=%s name=%q message_len=%d",
 		req.FromPhone, req.ToPhone, req.Name, len(req.Message))
 
 	result, err := s.client.SendMessage(ctx, req.FromPhone, req.ToPhone, req.Message, req.Name)
@@ -167,7 +168,7 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[SEND] ✅ %s → %s | MessageID: %s | Timestamp: %d", 
+	log.Printf("[SEND] ✅ %s → %s | MessageID: %s | Timestamp: %d",
 		req.FromPhone, req.ToPhone, result.MessageID, result.Timestamp)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -187,8 +188,32 @@ func (s *Server) handleAccountsList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Add disconnection reasons for each account
+	accountsWithReasons := make([]map[string]interface{}, len(accounts))
+	for i, acc := range accounts {
+		accMap := map[string]interface{}{
+			"phone":     acc.Phone,
+			"connected": acc.Connected,
+			"logged_in": acc.LoggedIn,
+		}
+
+		// Get detailed health info
+		if health := s.client.GetAccountHealth(acc.Phone); health != nil {
+			accMap["health_status"] = health.Status
+			accMap["last_error"] = health.LastError
+			accMap["consecutive_failures"] = health.ConsecutiveFailures
+			accMap["last_alive"] = health.LastAlive
+			accMap["messages_today"] = health.MessagesToday
+		} else {
+			accMap["last_error"] = ""
+			accMap["messages_today"] = 0
+		}
+
+		accountsWithReasons[i] = accMap
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"accounts":      accounts,
+		"accounts":      accountsWithReasons,
 		"total_healthy": healthy,
 	})
 }
@@ -216,12 +241,33 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		req.SessionNumber = 1
 	}
 
+	// Check if account already exists and is connected
+	existingAccounts := s.client.GetAllAccountsStatus()
+	for _, acc := range existingAccounts {
+		if acc.Phone == req.Phone {
+			// Check if really connected (not just logged_in)
+			if acc.LoggedIn && acc.Connected {
+				log.Printf("[PAIR] %s session %d: Already connected (skipping)", req.Phone, req.SessionNumber)
+				writeJSON(w, http.StatusOK, map[string]interface{}{
+					"success":        true,
+					"status":         "already_connected",
+					"phone":          req.Phone,
+					"session_number": req.SessionNumber,
+					"logged_in":      true,
+					"connected":      true,
+					"message":        "Account is already connected",
+				})
+				return
+			}
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
 	result, err := s.client.ConnectWithPairingCode(ctx, req.Phone)
 	if err != nil {
-		log.Printf("[PAIR] Error for %s: %v", req.Phone, err)
+		log.Printf("[PAIR] Error for %s session %d: %v", req.Phone, req.SessionNumber, err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -234,6 +280,8 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		"phone":          result.Phone,
 		"pairing_code":   result.PairingCode,
 		"session_number": req.SessionNumber,
+		"logged_in":      result.LoggedIn,
+		"connected":      false, // Not connected yet, waiting for pairing
 		"instructions":   "WhatsApp > Settings > Linked Devices > Link with phone number",
 	})
 }
@@ -272,6 +320,62 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		"qr_code":   result.QRCode,
 		"logged_in": result.LoggedIn,
 	})
+}
+
+// GET /accounts/{phone}/disconnect-reason - Get why account disconnected
+func (s *Server) handleDisconnectReason(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	phone := vars["phone"]
+
+	if phone == "" {
+		writeError(w, http.StatusBadRequest, "phone required")
+		return
+	}
+
+	// Get account status
+	status := s.client.GetAccountStatus(phone)
+	if status == nil {
+		writeError(w, http.StatusNotFound, "Account not found")
+		return
+	}
+
+	// Get health info
+	health := s.client.GetAccountHealth(phone)
+
+	disconnectInfo := map[string]interface{}{
+		"phone":              phone,
+		"connected":          status.Connected,
+		"logged_in":          status.LoggedIn,
+		"can_auto_reconnect": status.LoggedIn && !status.Connected, // Can reconnect if has session
+	}
+
+	if health != nil {
+		disconnectInfo["health_status"] = health.Status
+		disconnectInfo["last_error"] = health.LastError
+		disconnectInfo["consecutive_failures"] = health.ConsecutiveFailures
+		disconnectInfo["last_alive"] = health.LastAlive
+	} else {
+		disconnectInfo["health_status"] = "UNKNOWN"
+		disconnectInfo["last_error"] = ""
+		disconnectInfo["consecutive_failures"] = 0
+	}
+
+	// Determine disconnect reason
+	reason := "Unknown"
+	if health != nil && health.LastError != "" {
+		reason = health.LastError
+	} else if !status.LoggedIn {
+		reason = "Account not logged in - needs QR/Pairing Code"
+	} else if !status.Connected && status.LoggedIn {
+		reason = "Connection lost - will auto-reconnect (has valid session)"
+	} else if status.Connected && status.LoggedIn {
+		reason = "Connected"
+	}
+
+	disconnectInfo["disconnect_reason"] = reason
+	disconnectInfo["auto_reconnect_enabled"] = status.LoggedIn // Auto-reconnect works if has session
+
+	writeJSON(w, http.StatusOK, disconnectInfo)
 }
 
 // POST /accounts/{phone}/reconnect
