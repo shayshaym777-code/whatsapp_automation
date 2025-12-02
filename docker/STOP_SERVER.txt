@@ -1,0 +1,2 @@
+cd ~/whatsapp_automation/docker && docker compose stop master
+
