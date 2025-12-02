@@ -406,13 +406,8 @@ class QueueProcessor {
                     continue;
                 }
 
-                // 4. Cooldown: at least 4 seconds since last message
-                if (acc.last_message_at) {
-                    const secondsSinceLastMessage = (now - new Date(acc.last_message_at)) / 1000;
-                    if (secondsSinceLastMessage < 4) {
-                        continue;
-                    }
-                }
+                // 4. Cooldown removed - worker already handles delays (3-7 sec + typing 1-3 sec)
+                // The worker adds sufficient delays, so no need for additional cooldown here
 
                 available.push({
                     phone: account.phone,
@@ -619,12 +614,12 @@ class QueueProcessor {
                 last_message_at = NOW()
             WHERE phone = $1
         `, [senderPhone]);
-        
+
         // Log if approaching limit (for monitoring)
         const accountStats = await query(`
             SELECT messages_last_minute FROM accounts WHERE phone = $1
         `, [senderPhone]);
-        
+
         const currentCount = accountStats.rows[0]?.messages_last_minute || 0;
         const MESSAGES_PER_MINUTE_LIMIT = 20;
         if (currentCount >= MESSAGES_PER_MINUTE_LIMIT - 2) {
