@@ -1,0 +1,2 @@
+cd ~/whatsapp_automation/docker && git pull origin main && [ ! -f .env ] && cp env.template .env || true && docker compose down && docker compose up -d --build && sleep 10 && docker compose ps && echo "" && echo "✅ עדכון הושלם! מתחיל לוגים..." && echo "" && docker compose logs -f master
+
