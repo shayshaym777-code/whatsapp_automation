@@ -11,6 +11,7 @@ class QueueProcessor {
         this.isProcessing = false;
         this.processingInterval = null;
         this.lastTableErrorLog = null;
+        this.lastNoSendersLog = null;
         this.workers = [
             { id: 'worker-1', url: process.env.WORKER_1_URL || 'http://worker-1:3001' },
             { id: 'worker-2', url: process.env.WORKER_2_URL || 'http://worker-2:3002' },
@@ -54,7 +55,7 @@ class QueueProcessor {
 
             // Check if we have at least 2 messages waiting
             const pendingCount = await this.getPendingCount();
-            
+
             if (pendingCount === null || pendingCount < 2) {
                 this.isProcessing = false;
                 return; // Wait for more messages or table not ready
@@ -69,6 +70,12 @@ class QueueProcessor {
             const availableSenders = await this.getAvailableSenders();
             
             if (availableSenders.length === 0) {
+                // Only log once per minute to avoid spam
+                const now = Date.now();
+                if (!this.lastNoSendersLog || (now - this.lastNoSendersLog) > 60000) {
+                    logger.warn('[QueueProcessor] ⚠️ No available senders');
+                    this.lastNoSendersLog = now;
+                }
                 this.isProcessing = false;
                 return;
             }
@@ -77,7 +84,7 @@ class QueueProcessor {
 
             // Sort contacts by priority (existing chats first)
             const contacts = await this.getContactsByPriority();
-            
+
             if (contacts.length === 0) {
                 this.isProcessing = false;
                 return;
@@ -235,7 +242,7 @@ class QueueProcessor {
                 // Silent fail - don't log every error
             }
         }
-        
+
         if (allAccounts.length === 0) {
             return [];
         }
@@ -262,16 +269,16 @@ class QueueProcessor {
                 `, [account.phone]);
 
                 if (dbAccount.rows.length === 0) {
-                // Account not in DB - create it automatically
-                try {
-                    await query(`
+                    // Account not in DB - create it automatically
+                    try {
+                        await query(`
                         INSERT INTO accounts (phone, created_at, messages_last_minute, last_message_minute_reset)
                         VALUES ($1, NOW(), 0, NOW())
                         ON CONFLICT (phone) DO NOTHING
                     `, [account.phone]);
-                    
-                    // Retry getting account from DB
-                    const retryAccount = await query(`
+
+                        // Retry getting account from DB
+                        const retryAccount = await query(`
                         SELECT 
                             phone,
                             messages_last_minute,
@@ -284,52 +291,52 @@ class QueueProcessor {
                         FROM accounts
                         WHERE phone = $1
                     `, [account.phone]);
-                    
-                    if (retryAccount.rows.length === 0) {
-                        continue;
-                    }
-                    
-                    // Use the newly created account
-                    const acc = retryAccount.rows[0];
-                    
-                    // Check if available (skip blocked check for new accounts)
-                    let messagesLastMinute = acc.messages_last_minute || 0;
-                    const lastReset = acc.last_message_minute_reset ? new Date(acc.last_message_minute_reset) : new Date(0);
-                    const minutesSinceReset = (now - lastReset) / (1000 * 60);
-                    
-                    if (minutesSinceReset >= 1) {
-                        messagesLastMinute = 0;
-                    }
-                    
-                    if (messagesLastMinute >= 15) {
-                        continue;
-                    }
-                    
-                    if (acc.last_message_at) {
-                        const secondsSinceLastMessage = (now - new Date(acc.last_message_at)) / 1000;
-                        if (secondsSinceLastMessage < 4) {
+
+                        if (retryAccount.rows.length === 0) {
                             continue;
                         }
+
+                        // Use the newly created account
+                        const acc = retryAccount.rows[0];
+
+                        // Check if available (skip blocked check for new accounts)
+                        let messagesLastMinute = acc.messages_last_minute || 0;
+                        const lastReset = acc.last_message_minute_reset ? new Date(acc.last_message_minute_reset) : new Date(0);
+                        const minutesSinceReset = (now - lastReset) / (1000 * 60);
+
+                        if (minutesSinceReset >= 1) {
+                            messagesLastMinute = 0;
+                        }
+
+                        if (messagesLastMinute >= 15) {
+                            continue;
+                        }
+
+                        if (acc.last_message_at) {
+                            const secondsSinceLastMessage = (now - new Date(acc.last_message_at)) / 1000;
+                            if (secondsSinceLastMessage < 4) {
+                                continue;
+                            }
+                        }
+
+                        available.push({
+                            phone: account.phone,
+                            worker_url: account.worker_url,
+                            messages_last_minute: messagesLastMinute,
+                            last_message_at: acc.last_message_at,
+                            created_at: acc.created_at,
+                            total_messages_sent: acc.total_messages_sent || 0,
+                            successful_messages: acc.successful_messages || 0
+                        });
+                        continue;
+                    } catch (err) {
+                        continue;
                     }
-                    
-                    available.push({
-                        phone: account.phone,
-                        worker_url: account.worker_url,
-                        messages_last_minute: messagesLastMinute,
-                        last_message_at: acc.last_message_at,
-                        created_at: acc.created_at,
-                        total_messages_sent: acc.total_messages_sent || 0,
-                        successful_messages: acc.successful_messages || 0
-                    });
-                    continue;
                 } catch (err) {
                     continue;
                 }
-            } catch (err) {
-                continue;
-            }
-            
-            try {
+
+                try {
 
                     const acc = dbAccount.rows[0];
 
@@ -359,13 +366,13 @@ class QueueProcessor {
                         continue;
                     }
 
-            // 4. Cooldown: at least 4 seconds since last message
-            if (acc.last_message_at) {
-                const secondsSinceLastMessage = (now - new Date(acc.last_message_at)) / 1000;
-                if (secondsSinceLastMessage < 4) {
-                    continue;
-                }
-            }
+                    // 4. Cooldown: at least 4 seconds since last message
+                    if (acc.last_message_at) {
+                        const secondsSinceLastMessage = (now - new Date(acc.last_message_at)) / 1000;
+                        if (secondsSinceLastMessage < 4) {
+                            continue;
+                        }
+                    }
 
                     available.push({
                         phone: account.phone,
